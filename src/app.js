@@ -183,19 +183,29 @@ async function renderBills(params) {
 function billRow(b, t, today) {
   const paid = b.status === 'paid';
   const left = b.dueDate ? diffDays(today, b.dueDate) : null;
-  const badge = paid
-    ? `<span class="badge ok">已繳 ${formatDate(b.paidDate)}</span>`
-    : left != null && left < 0 ? '<span class="badge bad">逾期</span>'
-      : '<span class="badge warn">未繳</span>';
-  const clips = `${b.billFiles?.length ? '🧾' : ''}${b.proofFiles?.length ? '📎' : ''}`;
-  return `<a class="card row" href="#/bill/${b.id}">
+  const [cls, label] = paid ? ['ok', `已繳 ${formatDate(b.paidDate)}`]
+    : left == null ? ['warn', '未繳']
+      : left < 0 ? ['bad', `逾期 ${-left} 天`]
+        : left === 0 ? ['bad', '今天截止']
+          : left <= 7 ? ['warn', `剩 ${left} 天`]
+            : ['warn', '未繳'];
+  const meta = [b.dueDate ? `${formatDate(b.dueDate)} 截止` : '未填截止日'];
+  if (b.cycleMonths > 1) meta.push(`${cycleName(b.cycleMonths)}帳單`);
+  const files = [];
+  if (b.billFiles?.length) files.push('🧾 有繳費單');
+  if (b.proofFiles?.length) files.push('📎 有繳費證明');
+  return `<a class="card row bill-row" href="#/bill/${b.id}">
     <div class="icon">${catIcon(b.category || t?.category)}</div>
     <div class="grow">
-      <div class="title">${esc(b.name)} ${b.cycleMonths > 1 ? `<span class="badge">${cycleName(b.cycleMonths)}</span>` : ''} <span class="muted">${clips}</span></div>
-      <div class="sub">${b.dueDate ? `${formatDate(b.dueDate)} 截止` : '未填截止日'} ${badge}</div>
+      <div class="title one-line">${esc(b.name)}</div>
+      <div class="sub">${meta.join(' · ')}</div>
+      ${files.length ? `<div class="sub files-note">${files.join('　')}</div>` : ''}
     </div>
-    <div class="amount">${money(b.amount)}</div>
-    ${paid ? '' : `<button class="btn small primary" data-pay="${b.id}">✓ 已繳</button>`}
+    <div class="right">
+      <div class="amount">${money(b.amount)}</div>
+      <span class="status ${cls}">${label}</span>
+      ${paid ? '' : `<button class="btn small primary" data-pay="${b.id}">✓ 已繳</button>`}
+    </div>
   </a>`;
 }
 
