@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>繳費小幫手</title>
+  <meta name="description" content="記錄每月繳費、掃描繳費單、上傳繳費證明、提醒拿單與截止日">
+  <meta name="theme-color" content="#0f766e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="繳費小幫手">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="view"></main>
+  <nav class="tabs">
+    <a href="#/" data-tab=""><span>🏠</span>首頁</a>
+    <a href="#/bills" data-tab="bills"><span>🧾</span>紀錄</a>
+    <a href="#/templates" data-tab="templates"><span>🔁</span>固定繳費</a>
+    <a href="#/settings" data-tab="settings"><span>⚙️</span>設定</a>
+  </nav>
+  <div id="toast" role="status"></div>
+  <dialog id="viewer"><img alt="繳費單/證明"></dialog>
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>

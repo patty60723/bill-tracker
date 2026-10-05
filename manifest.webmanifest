@@ -1,0 +1,14 @@
+{
+  "name": "繳費小幫手",
+  "short_name": "繳費小幫手",
+  "description": "記錄每月繳費、掃描繳費單、上傳繳費證明、提醒拿單與截止日",
+  "lang": "zh-Hant-TW",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f6f5",
+  "theme_color": "#0f766e",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

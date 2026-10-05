@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#0f766e"/>
+  <path d="M150 112h212v300l-35-24-35 24-36-24-35 24-36-24-35 24z" fill="#fff"/>
+  <rect x="190" y="170" width="132" height="18" rx="9" fill="#0f766e"/>
+  <rect x="190" y="222" width="132" height="18" rx="9" fill="#0f766e"/>
+  <path d="M196 298l36 36 74-74" fill="none" stroke="#0f766e" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
