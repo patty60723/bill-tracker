@@ -5,8 +5,10 @@ import { parseBillText, parseConvenienceBarcodes, mergeScan } from '../src/parse
 import { buildReminders, monthSummary, nextPeriod, occursIn, periodDates } from '../src/schedule.js';
 import { buildICS } from '../src/ics.js';
 
-test('超商三段式條碼:截止日、金額、應繳月份', () => {
-  const r = parseConvenienceBarcodes(['151031K6A', '0000123456789012', '1510AB000001234']);
+const TODAY = '2026-10-05';
+
+test('超商三段式條碼:民國年截止日、金額、應繳月份', () => {
+  const r = parseConvenienceBarcodes(['151031K6A', '0000123456789012', '1510AB000001234'], TODAY);
   assert.equal(r.dueDate, '2026-10-31');
   assert.equal(r.collectionCode, 'K6A');
   assert.equal(r.amount, 1234);
@@ -14,33 +16,77 @@ test('超商三段式條碼:截止日、金額、應繳月份', () => {
   assert.equal(r.accountNo, '0000123456789012');
 });
 
-test('條碼:不存在的日期不採用', () => {
-  assert.equal(parseConvenienceBarcodes(['151332K6A']).dueDate, undefined);
+test('超商條碼:第一段用西元年末兩碼也認得', () => {
+  assert.equal(parseConvenienceBarcodes(['261031K6A'], TODAY).dueDate, '2026-10-31');
 });
 
-test('OCR 文字:民國年日期與千分位金額', () => {
-  const text = `台灣電力公司 電費通知單
-  計費期間 115/08/12 至 115/10/10
-  本期應繳總金額 NT$ 2,345 元
-  繳費期限:115年10月28日`;
-  assert.deepEqual(parseBillText(text), { amount: 2345, dueDate: '2026-10-28' });
+test('超商條碼:第三段前 4 碼是 MMDD 時,金額照樣讀得到', () => {
+  const r = parseConvenienceBarcodes(['*1031AB000000899*'], TODAY);
+  assert.equal(r.amount, 899);
+  assert.equal(r.period, undefined);
 });
 
-test('OCR 文字:金額跟日期在下一行、西元年', () => {
-  const text = '應繳金額\n$899\n繳款截止日\n2026/11/05';
-  assert.deepEqual(parseBillText(text), { amount: 899, dueDate: '2026-11-05' });
+test('條碼:不存在或太遠的日期不採用', () => {
+  assert.equal(parseConvenienceBarcodes(['151332K6A'], TODAY).dueDate, undefined);
+  assert.equal(parseConvenienceBarcodes(['401031K6A'], TODAY).dueDate, undefined);
 });
 
-test('OCR 文字:金額那行有日期時不要把日期當金額', () => {
-  assert.equal(parseBillText('繳費金額 115/10/31 前繳 560元').amount, 560);
+// 以下 OCR 文字是 Tesseract(chi_tra+eng)對合成帳單圖片的真實輸出:中文字之間會被插空白
+test('OCR:欄位式(關鍵字與值在同一行,中文字被空白隔開)', () => {
+  const text = `中 華電 信 電信 費 帳 單
+
+帳 單 月 份 115 年 09 月
+
+出 帳 日 期 115 年 09 月 28 日
+繳費 截止 日 115 年 10 月 15 日
+本 期 應 繳 總 金 額 899 元`;
+  assert.deepEqual(parseBillText(text, TODAY), { amount: 899, dueDate: '2026-10-15' });
 });
 
-test('mergeScan:條碼優先於 OCR', () => {
-  const r = mergeScan(['1510AB000000500'], '應繳金額 999\n繳費期限 115/12/01');
+test('OCR:一行式、西元年、最低應繳不能當成應繳金額', () => {
+  const text = `XX 銀行 信用 卡 帳 單
+結 帳 日 2026/09/22
+
+最 低 應 繳 金 額 : 1,235
+本 期 應 繳 總 金 額 : NT$12,345
+繳 款 截止 日 : 2026/10/08`;
+  assert.deepEqual(parseBillText(text, TODAY), { amount: 12345, dueDate: '2026-10-08' });
+});
+
+test('OCR:表格式(值在下一行,同一列還有計費期間)', () => {
+  const text = `台 灣 自 來 水 公司 水 費 通 知 單
+用 水 地 址 : 臺 北市 中 正 區 某 某 路 一 段 1 號 水 號 :K-12-345678-9
+計 費 期 間
+本 期 應 繳 金 額 | 繳費 期 限
+| 115/07/15~115/09/14 | 1,286 | 115/10/27 |
+收費 日 期 115 年 09 月 20 日 _ 抄 表 日 期 115/09/14`;
+  assert.deepEqual(parseBillText(text, TODAY), { amount: 1286, dueDate: '2026-10-27' });
+});
+
+test('OCR:表頭與數值之間多一行雜訊(真實輸出)', () => {
+  const text = `台 灣 自 來 水 公司 水 費 通 知 單\n用 水 地 址 : 臺 北市 中 正 區 某 某 路 一 段 1 號 水 號 :K-12-345678-9\n\n計 費 期 間 本 期 應 繳 金 額 繳費 期 限\n\ni 1\n115/07/15~115/09/14 NT$ 1,286 115/10/27\n\n收費 日 期 115 年 09 月 20 日 _ 抄 表 日 期 115/09/14`;
+  assert.deepEqual(parseBillText(text, TODAY), { amount: 1286, dueDate: '2026-10-27' });
+});
+
+test('OCR:表格亂掉找不到關鍵字時,猜近期最晚的日期並標記為推測', () => {
+  const text = `[wm  [smmasu] asom |\n收費 日 期 115 年 09 月 20 日 _ 抄 表 日 期 115/09/14\n115/10/27`;
+  assert.deepEqual(parseBillText(text, TODAY), { dueDate: '2026-10-27', dueDateGuessed: true });
+});
+
+test('OCR:全形數字與 O/l 誤認', () => {
+  assert.equal(parseBillText('繳費期限:１１５／１０／２８', TODAY).dueDate, '2026-10-28');
+  assert.equal(parseBillText('繳費期限 1l5/1O/28', TODAY).dueDate, '2026-10-28');
+});
+
+test('mergeScan:條碼優先;關鍵字結果優先於推測', () => {
+  const r = mergeScan(['1510AB000000500'], ['應繳金額 999\n繳費期限 115/12/01'], TODAY);
   assert.equal(r.amount, 500);
   assert.equal(r.source.amount, 'barcode');
   assert.equal(r.dueDate, '2026-12-01');
   assert.equal(r.source.dueDate, 'ocr');
+  const g = mergeScan([], ['亂碼 115/10/20', '繳費期限 115/10/27'], TODAY);
+  assert.equal(g.dueDate, '2026-10-27');
+  assert.equal(g.source.dueDate, 'ocr');
 });
 
 const water = {

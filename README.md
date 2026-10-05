@@ -5,8 +5,10 @@
 ## 功能
 
 - **掃描繳費單**:拍照後自動讀條碼,帶入金額與截止日。台灣超商代收的「三段式條碼」
-  (第一段 = 代收期限,第三段 = 應繳金額)讀得最準;條碼不完整時會改用文字辨識
-  (OCR,繁中+英文)找「應繳金額」「繳費期限」之類的字。帶入結果一律要自己核對。
+  (第一段 = 代收期限,民國或西元年都認得;第三段 = 應繳金額)讀得最準;條碼不完整時會改用
+  文字辨識(OCR,繁中+英文)找「應繳金額」「繳費期限」之類的字,表格式帳單會換個模式再讀一次。
+  都找不到「期限」字樣時,用帳單上近期最晚的日期**推測**截止日並清楚標示。掃描結果下方的
+  「辨識細節」可以看到實際讀到的條碼與文字。帶入結果一律要自己核對。
 - **每期帳單紀錄**:金額、帳單月份、帳單週期(單月/雙月/每季/半年/每年)、截止日、是否已繳、
   繳費日期與方式、備註。
 - **照片與繳費證明**:繳費單照片、收據/轉帳截圖/PDF 都可以存(照片會自動壓縮)。
@@ -51,11 +53,11 @@ iPhone 請用 Safari 開啟後「分享 → 加入主畫面」,通知功能才�
 | `src/parse.js` | 條碼與 OCR 文字 → 金額/截止日 |
 | `src/schedule.js` | 固定繳費週期計算、提醒清單、月統計 |
 | `src/ics.js` | 匯出行事曆提醒 |
-| `src/scan.js` | 讀條碼(zxing-wasm,離線)、OCR(Tesseract.js,第一次需網路下載約 10–20 MB) |
+| `src/scan.js` | 讀條碼(zxing-wasm)、OCR(Tesseract.js);都在 `vendor/`,不靠外部 CDN |
 | `src/db.js` | IndexedDB 存取、備份 |
 | `src/notify.js` | 提醒通知(頁面與 service worker 共用) |
 | `sw.js` | 離線快取、背景定期提醒 |
-| `vendor/` | [zxing-wasm](https://github.com/Sec-ant/zxing-wasm) 2.2.4 reader(MIT),讓條碼掃描離線可用 |
+| `vendor/` | [zxing-wasm](https://github.com/Sec-ant/zxing-wasm) 2.2.4 reader(MIT);`vendor/tesseract/`:[Tesseract.js](https://github.com/naptha/tesseract.js) 5.1.1 + core(Apache-2.0)與 chi_tra/eng 辨識資料(約 12 MB,第一次 OCR 才下載,之後離線可用) |
 
 ## 已知限制
 

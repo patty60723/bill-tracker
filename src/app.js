@@ -2,7 +2,7 @@ import * as db from './db.js';
 import {
   addMonths, diffDays, formatDate, formatPeriod, parsePeriod, periodKey, todayISO,
 } from './dates.js';
-import { mergeScan } from './parse.js';
+import { mergeScan, scanComplete } from './parse.js';
 import {
   buildReminders, CYCLES as BILL_CYCLES, cycleName, DEFAULT_REMIND_DAYS, monthSummary, nextPeriod, periodDates,
   suggestTemplateDays,
@@ -393,33 +393,52 @@ async function renderBillForm(id, params) {
     } catch (err) {
       console.warn(err);
     }
-    let result = mergeScan(barcodes, '');
-    if ((result.amount == null || !result.dueDate) && navigator.onLine) {
-      setStatus('🔤 條碼資訊不完整,改用文字辨識…(第一次需要下載辨識資料,約 10–20 秒)');
+    let result = mergeScan(barcodes);
+    let texts = [];
+    let ocrError = '';
+    if (!scanComplete(result)) {
+      setStatus('🔤 條碼資訊不完整,改用文字辨識…');
       try {
-        const text = await readText(file, (p) => setStatus(`🔤 文字辨識中… ${Math.round(p * 100)}%`));
-        result = mergeScan(barcodes, text);
+        texts = await readText(file, {
+          isEnough: (t) => scanComplete(mergeScan(barcodes, t)),
+          onProgress: (p) => setStatus(p.loading
+            ? '🔤 載入文字辨識…(第一次需要下載約 12 MB,之後就不用)'
+            : `🔤 文字辨識中…${p.pass > 1 ? '(換個方式再讀一次)' : ''} ${Math.round(p.progress * 100)}%`),
+        });
+        result = mergeScan(barcodes, texts);
       } catch (err) {
         console.warn(err);
+        ocrError = err?.message || String(err);
       }
     }
-    applyScan(result, barcodes);
+    applyScan(result, { barcodes, texts, ocrError });
   };
 
-  function applyScan(r, barcodes) {
+  function applyScan(r, { barcodes, texts, ocrError }) {
     const found = [];
+    const missing = [];
+    const via = (src) => ({ barcode: '條碼', ocr: '文字辨識', guess: '推測' }[src]);
     if (r.amount != null) {
-      form.amount.value = r.amount;
-      found.push(`金額 ${money(r.amount)}${r.source.amount === 'ocr' ? '(文字辨識)' : ''}`);
-    }
+      field('amount').value = r.amount;
+      found.push(`金額 ${money(r.amount)}(${via(r.source.amount)})`);
+    } else missing.push('金額');
     if (r.dueDate) {
-      form.dueDate.value = r.dueDate;
-      found.push(`截止日 ${r.dueDate}${r.source.dueDate === 'ocr' ? '(文字辨識)' : ''}`);
-    }
-    if (r.period && /^\d{4}-\d{2}$/.test(r.period)) form.period.value = r.period;
-    setStatus(found.length
-      ? `✅ 已帶入:${found.join('、')}<br><span class="muted small">請核對一下是否正確,文字辨識偶爾會看錯。</span>`
-      : `⚠️ 沒辨識出金額或截止日,照片已存下,請手動填寫。${barcodes.length ? `<br><span class="muted small">讀到的條碼:${barcodes.map(esc).join(' / ')}</span>` : ''}`);
+      field('dueDate').value = r.dueDate;
+      found.push(`截止日 ${formatDate(r.dueDate)}(${via(r.source.dueDate)})`);
+    } else missing.push('截止日');
+    if (r.period && /^\d{4}-\d{2}$/.test(r.period)) field('period').value = r.period;
+
+    const lines = [];
+    if (found.length) lines.push(`✅ 已帶入:${found.join('、')}`);
+    if (r.source.dueDate === 'guess') lines.push('⚠️ 帳單上沒找到「繳費期限」之類的字,截止日是用帳單上最晚的日期<b>推測</b>的,請一定要核對。');
+    if (missing.length) lines.push(`⚠️ 沒辨識出${missing.join('、')},請手動填寫。`);
+    if (ocrError) lines.push(`⚠️ 文字辨識失敗:${esc(ocrError)}`);
+    lines.push('<span class="muted small">照片已存下。辨識偶爾會看錯,存檔前請核對。</span>');
+    const detail = [
+      `條碼(${barcodes.length}):${barcodes.length ? barcodes.map(esc).join(' / ') : '沒讀到'}`,
+      ...texts.map((t, i) => `文字辨識 #${i + 1}:\n${esc(t.trim()) || '(空白)'}`),
+    ].join('\n\n');
+    setStatus(`${lines.join('<br>')}<details class="scan-detail"><summary>辨識細節</summary><pre>${detail}</pre></details>`);
   }
   if (params.get('scan') && isNew) $('#scan-input').click();
 

@@ -144,6 +144,9 @@ h3 { margin: 0 0 4px; font-size: 1rem; }
 
 .scan-box { display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: var(--radius); background: var(--info-bg); border: 1px solid var(--line); }
 .scan-status { font-size: .92rem; overflow-wrap: anywhere; }
+.scan-detail { margin-top: 6px; }
+.scan-detail summary { color: var(--muted); cursor: pointer; }
+.scan-detail pre { white-space: pre-wrap; font-size: .78rem; max-height: 240px; overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin: 6px 0 0; }
 
 .files { display: flex; flex-wrap: wrap; gap: 8px; }
 .file { position: relative; width: 84px; height: 84px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: var(--bg); }

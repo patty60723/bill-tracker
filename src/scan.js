@@ -1,8 +1,9 @@
-// 掃描繳費單:條碼(離線,用 repo 內附的 zxing-wasm)+ 文字辨識(OCR,需要網路)。
+// 掃描繳費單:條碼(zxing-wasm)+ 文字辨識(Tesseract.js),兩者都放在 vendor/,不靠外部 CDN。
+// OCR 的引擎和中英文辨識資料約 12 MB,第一次用到才下載,之後由 service worker 快取、可離線。
 
 const ZXING_FORMATS = ['Code39', 'Code128', 'Code93', 'ITF', 'QRCode', 'EAN-13'];
 const NATIVE_FORMATS = ['code_39', 'code_128', 'code_93', 'itf', 'qr_code', 'ean_13'];
-const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+const vendorUrl = (path) => new URL(`../vendor/${path}`, import.meta.url).href;
 
 const scripts = new Map();
 function loadScript(src) {
@@ -78,16 +79,34 @@ export async function readBarcodes(file) {
   return [...texts];
 }
 
-export async function readText(file, onProgress) {
-  await loadScript(TESSERACT_URL);
+/**
+ * OCR。先用自動版面分析(PSM 3);如果 isEnough(text) 說資訊還不夠,再用「零散文字」模式
+ * (PSM 11)跑一次——表格式帳單用 PSM 11 讀得比較好。回傳每一次的文字。
+ */
+export async function readText(file, { onProgress, isEnough = () => true } = {}) {
+  await loadScript(vendorUrl('tesseract/tesseract.min.js'));
+  const passes = ['3', '11'];
+  let pass = 0;
   const worker = await window.Tesseract.createWorker('chi_tra+eng', 1, {
-    logger: (m) => m.status === 'recognizing text' && onProgress?.(m.progress),
+    workerPath: vendorUrl('tesseract/worker.min.js'),
+    corePath: vendorUrl('tesseract/'),
+    langPath: vendorUrl('tesseract/'),
+    logger: (m) => {
+      if (m.status === 'recognizing text') onProgress?.({ pass: pass + 1, total: passes.length, progress: m.progress });
+      else if (/loading|initializ/.test(m.status)) onProgress?.({ loading: true });
+    },
   });
+  const texts = [];
   try {
-    const canvas = await toCanvas(file, 2000);
-    const { data } = await worker.recognize(canvas);
-    return data.text;
+    const canvas = await toCanvas(file, 2200);
+    for (; pass < passes.length; pass++) {
+      await worker.setParameters({ tessedit_pageseg_mode: passes[pass] });
+      const { data } = await worker.recognize(canvas);
+      texts.push(data.text);
+      if (isEnough(texts)) break;
+    }
   } finally {
     await worker.terminate();
   }
+  return texts;
 }
