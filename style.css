@@ -69,6 +69,8 @@ h3 { margin: 0 0 4px; font-size: 1rem; }
 }
 .btn.primary { background: var(--primary); border-color: var(--primary); color: var(--primary-text); font-weight: 600; }
 .btn.danger { color: var(--bad); border-color: var(--bad); }
+/* 次要動作:外框按鈕,跟實心的狀態標籤區分開 */
+.btn.outline { background: transparent; color: var(--primary); border: 1.5px solid var(--primary); font-weight: 600; }
 .btn.small { min-height: 34px; padding: 4px 10px; font-size: .9rem; }
 .btn.big { min-height: 50px; font-size: 1.05rem; flex: 1; }
 .btn:disabled { opacity: .55; cursor: default; }
@@ -206,6 +208,8 @@ nav.tabs a.on span { filter: none; opacity: 1; }
   padding: 10px 16px; border-radius: 10px; opacity: 0; pointer-events: none; transition: .2s; z-index: 10;
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
+#toast.has-action.show { pointer-events: auto; display: flex; align-items: center; gap: 16px; width: max-content; }
+#toast button { background: none; border: 0; color: inherit; font: inherit; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; padding: 4px 2px; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
 
 dialog#viewer { padding: 0; border: 0; background: transparent; max-width: 100vw; max-height: 100vh; }
 dialog#viewer::backdrop { background: rgba(0, 0, 0, .85); }

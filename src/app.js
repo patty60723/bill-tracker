@@ -66,12 +66,24 @@ function fileUrl(blob) {
   return url;
 }
 
-function toast(msg) {
+/** 底部提示;可以帶一個動作按鈕(例如「復原」),有按鈕時停留久一點。 */
+function toast(msg, action) {
   const el = $('#toast');
   el.textContent = msg;
+  if (action) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = action.label;
+    btn.onclick = () => {
+      el.classList.remove('show');
+      action.onClick();
+    };
+    el.append(btn);
+  }
+  el.classList.toggle('has-action', !!action);
   el.classList.add('show');
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => el.classList.remove('show'), 2400);
+  toast.timer = setTimeout(() => el.classList.remove('show'), action ? 6000 : 2400);
 }
 
 function go(hash) {
@@ -96,7 +108,7 @@ async function loadAll() {
 function reminderCard(r, bill) {
   const copy = bill?.accountNo ? `<button class="btn small" data-copy="${esc(bill.accountNo)}">📋 帳號</button>` : '';
   const actions = r.billId
-    ? `<button class="btn small primary" data-pay="${r.billId}">✓ 已繳</button>
+    ? `<button class="btn small outline" data-pay="${r.billId}">標記已繳</button>
        ${copy}<a class="btn small" href="#/bill/${r.billId}">查看</a>`
     : `<a class="btn small primary" href="#/bill/new?template=${r.templateId}&period=${r.period}">登記帳單</a>`;
   return `<div class="card reminder ${r.level}">
@@ -205,18 +217,22 @@ function billRow(b, t, today) {
     <div class="right">
       <div class="amount">${money(b.amount)}</div>
       <span class="status ${cls}">${label}</span>
-      ${paid ? '' : `<button class="btn small primary" data-pay="${b.id}">✓ 已繳</button>`}
+      ${paid ? '' : `<button class="btn small outline" data-pay="${b.id}">標記已繳</button>`}
     </div>
   </a>`;
 }
 
 async function markPaid(id) {
-  const b = await db.get('bills', id);
-  b.status = 'paid';
-  b.paidDate = todayISO();
-  b.updatedAt = new Date().toISOString();
-  await db.put('bills', b);
-  toast(`「${b.name}」已標記為已繳,可以進去上傳繳費證明`);
+  const before = await db.get('bills', id);
+  await db.put('bills', { ...before, status: 'paid', paidDate: todayISO(), updatedAt: new Date().toISOString() });
+  toast(`「${before.name}」已標記為已繳`, {
+    label: '復原',
+    onClick: async () => {
+      await db.put('bills', before);
+      toast('已復原為未繳');
+      render();
+    },
+  });
   render();
 }
 
