@@ -43,8 +43,8 @@ export function parseConvenienceBarcodes(texts, today = todayISO()) {
         const ym = twoDigitYearDate(+t.slice(0, 2), +t.slice(2, 4), 1, today);
         if (ym && near(ym, today, 120)) result.period = ym.slice(0, 7);
       }
-    } else if (/^[0-9A-Z]{16}$/.test(t) && !result.accountNo) {
-      result.accountNo = t;
+    } else if (/^[0-9A-Z]{16}$/.test(t) && !result.billNo) {
+      result.billNo = t; // 銷帳編號:每期不同,只記下來不拿來填欄位
     }
   }
   return result;
@@ -138,8 +138,31 @@ function findAmount(lines) {
   return null;
 }
 
+// 轉帳/ATM 繳費用的帳號
+const ACCOUNT_KEYWORDS = ['繳費帳號', '繳款帳號', '轉帳帳號', '虛擬帳號', '匯款帳號', '轉入帳號', '專屬帳號', '繳費帳戶', '繳款帳戶', '帳號'];
+const ACCOUNT_SKIP = /扣款帳號|扣繳帳號|約定帳號/; // 這些是「從哪個帳戶扣」,不是要繳進去的帳號
+// 4 碼一組(1234 5678 9012 3456 / 1234-5678-9012-34)或一整串 10–16 碼
+const ACCOUNT_RE = /(?<![\d-])(\d{4}(?:[ -]\d{4}){1,2}(?:[ -]\d{1,4})?|\d{10,16})(?![\d-])/;
+const BANK_CODE_RE = /(?:銀行代[碼號]|金融機構代[碼號]|代收行代[碼號]|轉入行代[碼號]|銀行)\s*[:]?\s*\(?(\d{3})\)?(?!\d)/;
+
+function findPayAccount(lines) {
+  for (const kw of ACCOUNT_KEYWORDS) {
+    for (const region of regionsAfter(lines, kw, ACCOUNT_SKIP)) {
+      // 帳號前面常寫「(822)」這種銀行代碼,先拿掉免得黏成一串
+      const paren = region.match(/\((\d{3})\)/);
+      const m = region.replace(/\(\d{3}\)/g, ' ').match(ACCOUNT_RE);
+      if (!m) continue;
+      const accountNo = m[1].replace(/[ -]/g, '');
+      if (accountNo.length < 10 || accountNo.length > 16) continue;
+      const bank = lines.join('\n').match(BANK_CODE_RE)?.[1] || paren?.[1];
+      return { accountNo, ...(bank ? { bankCode: bank } : {}) };
+    }
+  }
+  return null;
+}
+
 /**
- * OCR 出來的全文 → { amount?, dueDate?, dueDateGuessed? }。
+ * OCR 出來的全文 → { amount?, dueDate?, dueDateGuessed?, accountNo?, bankCode? }。
  * 先找關鍵字;找不到截止日關鍵字時,退而求其次猜「近期內最晚的日期」(dueDateGuessed = true)。
  */
 export function parseBillText(text, today = todayISO()) {
@@ -147,6 +170,7 @@ export function parseBillText(text, today = todayISO()) {
   const result = {};
   const amount = findAmount(lines);
   if (amount != null) result.amount = amount;
+  Object.assign(result, findPayAccount(lines));
   const due = findDueDate(lines, today);
   if (due) {
     result.dueDate = due;
@@ -173,6 +197,7 @@ export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO()) {
   const fromText = {};
   for (const r of texts) {
     if (fromText.amount == null && r.amount != null) fromText.amount = r.amount;
+    if (!fromText.accountNo && r.accountNo) Object.assign(fromText, { accountNo: r.accountNo, bankCode: r.bankCode });
     if (r.dueDate && (!fromText.dueDate || (fromText.dueDateGuessed && !r.dueDateGuessed))) {
       fromText.dueDate = r.dueDate;
       fromText.dueDateGuessed = !!r.dueDateGuessed;

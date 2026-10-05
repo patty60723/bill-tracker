@@ -13,7 +13,7 @@ test('超商三段式條碼:民國年截止日、金額、應繳月份', () => {
   assert.equal(r.collectionCode, 'K6A');
   assert.equal(r.amount, 1234);
   assert.equal(r.period, '2026-10');
-  assert.equal(r.accountNo, '0000123456789012');
+  assert.equal(r.billNo, '0000123456789012');
 });
 
 test('超商條碼:第一段用西元年末兩碼也認得', () => {
@@ -76,6 +76,18 @@ test('OCR:表格亂掉找不到關鍵字時,猜近期最晚的日期並標記為
 test('OCR:全形數字與 O/l 誤認', () => {
   assert.equal(parseBillText('繳費期限:１１５／１０／２８', TODAY).dueDate, '2026-10-28');
   assert.equal(parseBillText('繳費期限 1l5/1O/28', TODAY).dueDate, '2026-10-28');
+});
+
+test('OCR:繳費帳號與銀行代碼', () => {
+  assert.deepEqual(parseBillText('銀 行 代 碼 : 822 中 國 信託\n繳 費 帳 號 : 9876 5432 1098 7654', TODAY),
+    { accountNo: '9876543210987654', bankCode: '822' });
+  // 帳號在下一行、前面有 (812)
+  assert.deepEqual(parseBillText('ATM 轉 帳 帳 號\n(812) 12345678901234', TODAY),
+    { accountNo: '12345678901234', bankCode: '812' });
+  // 最後一組不足 4 碼
+  assert.equal(parseBillText('繳費帳號:1234 5678 9012 34', TODAY).accountNo, '12345678901234');
+  // 扣款帳號不是繳費帳號;日期、金額不會被當成帳號
+  assert.equal(parseBillText('扣 款 帳 號 1234567890123\n繳費期限 115/10/27 金額 1,286', TODAY).accountNo, undefined);
 });
 
 test('mergeScan:條碼優先;關鍵字結果優先於推測', () => {

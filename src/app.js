@@ -33,6 +33,31 @@ const dayLabel = (d) => (d >= 31 ? '月底' : `${d} 號`);
 const dayOptions = (selected) => Array.from({ length: 28 }, (_, i) => i + 1).concat(31)
   .map((d) => `<option value="${d}" ${d === selected ? 'selected' : ''}>${dayLabel(d)}</option>`).join('');
 
+const digits = (v) => String(v ?? '').replace(/\D/g, '');
+const accountText = (o) => (o.accountNo ? `${o.bankCode ? `(${o.bankCode}) ` : ''}${o.accountNo}` : '');
+
+/** 繳費帳號欄位:銀行代碼 + 帳號 + 複製按鈕。 */
+function accountFields(o) {
+  return `<div class="account-field">
+    <span class="label-text">繳費帳號 <span class="muted small">(ATM / 網銀轉帳用,可不填)</span></span>
+    <div class="account-row">
+      <input name="bankCode" inputmode="numeric" maxlength="3" placeholder="銀行代碼" value="${esc(o.bankCode)}" aria-label="銀行代碼">
+      <input name="accountNo" inputmode="numeric" placeholder="帳號" value="${esc(o.accountNo)}" aria-label="繳費帳號">
+      <button type="button" class="btn small" data-copy-account>📋 複製</button>
+    </div>
+  </div>`;
+}
+
+async function copyText(text, label) {
+  if (!text) return toast(`還沒有${label}`);
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`已複製${label}:${text}`);
+  } catch {
+    prompt(`請長按複製${label}`, text);
+  }
+}
+
 let objectUrls = [];
 function fileUrl(blob) {
   const url = URL.createObjectURL(blob);
@@ -67,10 +92,11 @@ async function loadAll() {
 // ---------- 首頁 ----------
 
 
-function reminderCard(r) {
+function reminderCard(r, bill) {
+  const copy = bill?.accountNo ? `<button class="btn small" data-copy="${esc(bill.accountNo)}">📋 帳號</button>` : '';
   const actions = r.billId
     ? `<button class="btn small primary" data-pay="${r.billId}">✓ 已繳</button>
-       <a class="btn small" href="#/bill/${r.billId}">查看</a>`
+       ${copy}<a class="btn small" href="#/bill/${r.billId}">查看</a>`
     : `<a class="btn small primary" href="#/bill/new?template=${r.templateId}&period=${r.period}">登記帳單</a>`;
   return `<div class="card reminder ${r.level}">
     <div class="grow">
@@ -97,7 +123,7 @@ async function renderHome() {
     ${notifyBanner(templates.length + bills.length)}
     <section>
       <h2>待辦提醒</h2>
-      ${reminders.length ? reminders.map(reminderCard).join('') : `<div class="empty">目前沒有要處理的帳單 🎉${templates.length ? '' : '<br><a href="#/template/new">先設定固定繳費</a>,就會自動提醒你拿繳費單、繳費截止。'}</div>`}
+      ${reminders.length ? reminders.map((r) => reminderCard(r, bills.find((b) => b.id === r.billId))).join('') : `<div class="empty">目前沒有要處理的帳單 🎉${templates.length ? '' : '<br><a href="#/template/new">先設定固定繳費</a>,就會自動提醒你拿繳費單、繳費截止。'}</div>`}
     </section>
     <section>
       <h2>${m} 月帳單 <a class="link" href="#/bills">看全部 ›</a></h2>
@@ -195,6 +221,7 @@ async function renderBillForm(id, params) {
     bill = {
       id: db.uid(), name: t?.name || '', templateId: t?.id || '', category: t?.category || 'other',
       period, cycleMonths: t?.cycleMonths || 1, amount: t?.amount ?? '', dueDate: t ? periodDates(t, period).due : '',
+      accountNo: t?.accountNo || '', bankCode: t?.bankCode || '',
       status: 'unpaid', paidDate: '', paidMethod: '', notes: '', billFiles: [], proofFiles: [],
     };
   } else {
@@ -236,6 +263,7 @@ async function renderBillForm(id, params) {
         <label>金額 <input type="number" name="amount" inputmode="numeric" min="0" step="1" value="${esc(bill.amount)}" placeholder="0"></label>
         <label>繳費截止日 <input type="date" name="dueDate" value="${esc(bill.dueDate)}"></label>
       </div>
+      ${accountFields(bill)}
 
       <fieldset id="save-template" ${bill.templateId ? 'hidden' : ''}>
         <label class="switch"><input type="checkbox" name="saveTemplate"> 同時存成固定繳費</label>
@@ -294,6 +322,8 @@ async function renderBillForm(id, params) {
     arrivalDay: Number(field('arrivalDay').value),
     dueDay: Number(field('dueDay').value),
     remindDays: Number(field('remindDays').value || 0),
+    accountNo: digits(field('accountNo').value),
+    bankCode: digits(field('bankCode').value),
     active: true,
     notes: '',
   });
@@ -350,6 +380,10 @@ async function renderBillForm(id, params) {
       field('category').value = t.category || 'other';
       field('cycleMonths').value = t.cycleMonths || 1;
       if (!field('amount').value && t.amount) field('amount').value = t.amount;
+      if (!field('accountNo').value && t.accountNo) {
+        field('accountNo').value = t.accountNo;
+        field('bankCode').value = t.bankCode || '';
+      }
       if (!field('dueDate').value && field('period').value) field('dueDate').value = periodDates(t, field('period').value).due;
     } else if (el.name === 'saveTemplate') {
       $('#tpl-fields').hidden = !el.checked;
@@ -363,6 +397,10 @@ async function renderBillForm(id, params) {
   });
 
   form.addEventListener('click', async (e) => {
+    if (e.target.closest('[data-copy-account]')) {
+      copyText(digits(field('accountNo').value), '帳號');
+      return;
+    }
     const rm = e.target.closest('[data-remove]');
     if (rm) {
       const [key, fid] = rm.dataset.remove.split(':');
@@ -396,7 +434,8 @@ async function renderBillForm(id, params) {
     let result = mergeScan(barcodes);
     let texts = [];
     let ocrError = '';
-    if (!scanComplete(result)) {
+    // 帳號欄位還空著的話也跑一次文字辨識,看帳單上有沒有寫轉帳帳號
+    if (!scanComplete(result) || !field('accountNo').value) {
       setStatus('🔤 條碼資訊不完整,改用文字辨識…');
       try {
         texts = await readText(file, {
@@ -427,6 +466,11 @@ async function renderBillForm(id, params) {
       found.push(`截止日 ${formatDate(r.dueDate)}(${via(r.source.dueDate)})`);
     } else missing.push('截止日');
     if (r.period && /^\d{4}-\d{2}$/.test(r.period)) field('period').value = r.period;
+    if (r.accountNo && !field('accountNo').value) {
+      field('accountNo').value = r.accountNo;
+      if (r.bankCode) field('bankCode').value = r.bankCode;
+      found.push(`繳費帳號 ${accountText(r)}`);
+    }
 
     const lines = [];
     if (found.length) lines.push(`✅ 已帶入:${found.join('、')}`);
@@ -459,6 +503,8 @@ async function renderBillForm(id, params) {
       status: paid ? 'paid' : 'unpaid',
       paidDate: paid ? fd.get('paidDate') || todayISO() : '',
       paidMethod: paid ? fd.get('paidMethod') : '',
+      accountNo: digits(fd.get('accountNo')),
+      bankCode: digits(fd.get('bankCode')),
       notes: fd.get('notes').trim(),
       updatedAt: new Date().toISOString(),
       createdAt: bill.createdAt || new Date().toISOString(),
@@ -516,6 +562,7 @@ async function renderTemplates() {
         <div class="grow">
           <div class="title">${esc(t.name)} ${t.active ? '' : '<span class="badge">已停用</span>'}</div>
           <div class="sub">${cycleText(t)}</div>
+          ${t.accountNo ? `<div class="sub">帳號 ${esc(accountText(t))}</div>` : ''}
           ${n && t.active ? `<div class="sub">${n.arrival <= today ? '本期' : '下一期'}:${formatDate(n.arrival)} 到單、${formatDate(n.due)} 截止</div>` : ''}
         </div>
         <div class="amount">${t.amount ? `約 ${money(t.amount)}` : ''}</div>
@@ -529,7 +576,7 @@ async function renderTemplateForm(id) {
   const t = isNew
     ? {
       id: db.uid(), name: '', category: 'other', amount: '', cycleMonths: 1, anchorMonth: new Date().getMonth() + 1,
-      arrivalDay: 1, dueDay: 15, remindDays: DEFAULT_REMIND_DAYS, active: true, notes: '',
+      arrivalDay: 1, dueDay: 15, remindDays: DEFAULT_REMIND_DAYS, active: true, notes: '', accountNo: '', bankCode: '',
     }
     : await db.get('templates', id);
   if (!t) return go('#/templates');
@@ -562,7 +609,8 @@ async function renderTemplateForm(id) {
       <p class="muted small" id="due-hint"></p>
       <label>截止前幾天提醒 <input type="number" name="remindDays" min="0" max="30" value="${esc(t.remindDays)}"></label>
       <label class="switch"><input type="checkbox" name="active" ${t.active ? 'checked' : ''}> 啟用提醒</label>
-      <label>備註 <textarea name="notes" rows="2" placeholder="例如:電號、繳費帳號">${esc(t.notes)}</textarea></label>
+      ${accountFields(t)}
+      <label>備註 <textarea name="notes" rows="2" placeholder="例如:電號、用戶編號">${esc(t.notes)}</textarea></label>
       <div class="form-actions">
         <button class="btn primary big" type="submit">儲存</button>
         ${isNew ? '' : '<button class="btn big danger" type="button" id="delete">刪除</button>'}
@@ -581,6 +629,8 @@ async function renderTemplateForm(id) {
     dueDay: Number(form.dueDay.value),
     remindDays: Number(form.remindDays.value || 0),
     active: form.active.checked,
+    accountNo: digits(form.elements.namedItem('accountNo').value),
+    bankCode: digits(form.elements.namedItem('bankCode').value),
     notes: form.notes.value.trim(),
   });
   const hint = () => {
@@ -590,6 +640,9 @@ async function renderTemplateForm(id) {
     $('#due-hint').textContent = `${cur.dueDay < cur.arrivalDay ? '截止日比到單日早,視為隔月截止。' : ''}${n.arrival <= todayISO() ? '本期' : '下一期'}:${formatDate(n.arrival)} 到單、${formatDate(n.due)} 截止。`;
   };
   form.addEventListener('change', hint);
+  form.addEventListener('click', (e) => {
+    if (e.target.closest('[data-copy-account]')) copyText(digits(form.elements.namedItem('accountNo').value), '帳號');
+  });
   hint();
 
   form.onsubmit = async (e) => {
@@ -775,6 +828,12 @@ view.addEventListener('click', async (e) => {
   if (e.target.closest('[data-enable-notify]')) {
     await enableNotifications();
     render();
+    return;
+  }
+  const copy = e.target.closest('[data-copy]');
+  if (copy) {
+    e.preventDefault();
+    copyText(copy.dataset.copy, '帳號');
     return;
   }
   const pay = e.target.closest('[data-pay]');

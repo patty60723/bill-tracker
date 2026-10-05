@@ -132,6 +132,10 @@ h3 { margin: 0 0 4px; font-size: 1rem; }
   padding: 10px 12px; width: 100%; min-height: 44px;
 }
 .form .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.account-field { display: flex; flex-direction: column; gap: 4px; }
+.account-field .label-text { font-size: .9rem; color: var(--muted); }
+.account-row { display: grid; grid-template-columns: 96px 1fr auto; gap: 8px; align-items: center; }
+.account-row .btn { min-height: 44px; }
 .form fieldset { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px 12px; margin: 0; display: flex; flex-direction: column; gap: 10px; background: var(--surface); }
 .form legend { padding: 0 6px; font-weight: 600; }
 .form .switch { flex-direction: row; align-items: center; gap: 10px; color: var(--text); font-size: 1rem; }
