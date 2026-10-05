@@ -2,7 +2,8 @@ import * as db from './db.js';
 import {
   addMonths, diffDays, formatDate, formatPeriod, parsePeriod, periodKey, todayISO,
 } from './dates.js';
-import { mergeScan, scanComplete } from './parse.js';
+import { mergeScan, parseConvenienceBarcodes, scanComplete } from './parse.js';
+import { liveScan } from './livescan.js';
 import {
   buildReminders, CYCLES as BILL_CYCLES, cycleName, DEFAULT_REMIND_DAYS, monthSummary, nextPeriod, periodDates,
   suggestTemplateDays,
@@ -247,8 +248,11 @@ async function renderBillForm(id, params) {
     </header>
     <form id="bill-form" class="form">
       <div class="scan-box">
-        <button type="button" class="btn primary" id="scan-btn">📷 掃描繳費單</button>
-        <span class="muted small">拍繳費單(條碼要拍清楚),自動帶入金額與截止日</span>
+        <div class="scan-buttons">
+          <button type="button" class="btn primary" id="scan-btn">📷 拍照辨識</button>
+          <button type="button" class="btn" id="live-btn">▦ 對準條碼掃</button>
+        </div>
+        <span class="muted small">拍整張繳費單自動帶入金額、截止日;條碼讀不到時用「對準條碼掃」,鏡頭靠近條碼掃</span>
         <input type="file" id="scan-input" accept="image/*" capture="environment" hidden>
         <div id="scan-status" class="scan-status" hidden></div>
       </div>
@@ -428,6 +432,12 @@ async function renderBillForm(id, params) {
   // --- 掃描 ---
   const status = $('#scan-status');
   const setStatus = (html) => { status.hidden = false; status.innerHTML = html; };
+  // 拍照和即時掃描的結果累積在一起,兩種方式可以混用
+  const scan = { barcodes: new Set(), texts: [], errors: [] };
+  const barcodesEnough = (t) => {
+    const r = parseConvenienceBarcodes(t);
+    return !!(r.dueDate && r.amount != null);
+  };
   $('#scan-btn').onclick = () => $('#scan-input').click();
   $('#scan-input').onchange = async (e) => {
     const file = e.target.files[0];
@@ -435,35 +445,38 @@ async function renderBillForm(id, params) {
     if (!file) return;
     await addFiles('billFiles', [file]);
     setStatus('🔍 辨識條碼中…');
-    let barcodes = [];
-    try {
-      barcodes = await readBarcodes(file);
-    } catch (err) {
-      console.warn(err);
-    }
-    let result = mergeScan(barcodes);
-    let texts = [];
-    let ocrError = '';
+    const { texts: codes, errors } = await readBarcodes(file, { isEnough: barcodesEnough });
+    codes.forEach((c) => scan.barcodes.add(c));
+    scan.errors.push(...errors);
+    let result = mergeScan([...scan.barcodes], scan.texts);
     // 帳號欄位還空著的話也跑一次文字辨識,看帳單上有沒有寫轉帳帳號
     if (!scanComplete(result) || !field('accountNo').value) {
       setStatus('🔤 條碼資訊不完整,改用文字辨識…');
       try {
-        texts = await readText(file, {
-          isEnough: (t) => scanComplete(mergeScan(barcodes, t)),
+        const texts = await readText(file, {
+          isEnough: (t) => scanComplete(mergeScan([...scan.barcodes], t)),
           onProgress: (p) => setStatus(p.loading
             ? '🔤 載入文字辨識…(第一次需要下載約 12 MB,之後就不用)'
             : `🔤 文字辨識中…${p.pass > 1 ? '(換個方式再讀一次)' : ''} ${Math.round(p.progress * 100)}%`),
         });
-        result = mergeScan(barcodes, texts);
+        scan.texts = texts;
+        result = mergeScan([...scan.barcodes], texts);
       } catch (err) {
         console.warn(err);
-        ocrError = err?.message || String(err);
+        scan.errors.push(`文字辨識:${err?.message || err}`);
       }
     }
-    applyScan(result, { barcodes, texts, ocrError });
+    applyScan(result);
+  };
+  $('#live-btn').onclick = async () => {
+    const codes = await liveScan({ describe: describeBarcodes, isEnough: barcodesEnough });
+    if (!codes) return;
+    codes.forEach((c) => scan.barcodes.add(c));
+    applyScan(mergeScan([...scan.barcodes], scan.texts));
   };
 
-  function applyScan(r, { barcodes, texts, ocrError }) {
+  function applyScan(r) {
+    const barcodes = [...scan.barcodes];
     const found = [];
     const missing = [];
     const via = (src) => ({ barcode: '條碼', ocr: '文字辨識', guess: '推測' }[src]);
@@ -476,6 +489,7 @@ async function renderBillForm(id, params) {
       found.push(`截止日 ${formatDate(r.dueDate)}(${via(r.source.dueDate)})`);
     } else missing.push('截止日');
     if (r.period && /^\d{4}-\d{2}$/.test(r.period)) field('period').value = r.period;
+    if (r.cycleMonths) field('cycleMonths').value = r.cycleMonths;
     if (r.accountNo && !field('accountNo').value) {
       field('accountNo').value = r.accountNo;
       if (r.bankCode) field('bankCode').value = r.bankCode;
@@ -486,11 +500,14 @@ async function renderBillForm(id, params) {
     if (found.length) lines.push(`✅ 已帶入:${found.join('、')}`);
     if (r.source.dueDate === 'guess') lines.push('⚠️ 帳單上沒找到「繳費期限」之類的字,截止日是用帳單上最晚的日期<b>推測</b>的,請一定要核對。');
     if (missing.length) lines.push(`⚠️ 沒辨識出${missing.join('、')},請手動填寫。`);
-    if (ocrError) lines.push(`⚠️ 文字辨識失敗:${esc(ocrError)}`);
+    if (r.source.dueDate !== 'barcode' && !barcodesEnough(barcodes)) {
+      lines.push('💡 截止日、金額最準的來源是帳單下方的超商條碼。條碼沒讀到的話,按「▦ 對準條碼掃」把鏡頭靠近條碼試試。');
+    }
     lines.push('<span class="muted small">照片已存下。辨識偶爾會看錯,存檔前請核對。</span>');
     const detail = [
       `條碼(${barcodes.length}):${barcodes.length ? barcodes.map(esc).join(' / ') : '沒讀到'}`,
-      ...texts.map((t, i) => `文字辨識 #${i + 1}:\n${esc(t.trim()) || '(空白)'}`),
+      ...scan.texts.map((t, i) => `文字辨識 #${i + 1}:\n${esc(t.trim()) || '(空白)'}`),
+      ...(scan.errors.length ? [`錯誤:\n${[...new Set(scan.errors)].map(esc).join('\n')}`] : []),
     ].join('\n\n');
     setStatus(`${lines.join('<br>')}<details class="scan-detail"><summary>辨識細節</summary><pre>${detail}</pre></details>`);
   }
@@ -543,6 +560,16 @@ async function renderBillForm(id, params) {
     toast('已刪除');
     go(`#/bills?month=${bill.period}`);
   });
+}
+
+/** 即時掃描畫面上顯示目前讀到哪幾段。 */
+function describeBarcodes(texts) {
+  const r = parseConvenienceBarcodes(texts);
+  const row = (ok, label, value) => `<div class="${ok ? 'ok' : 'muted'}">${ok ? '✅' : '⬜'} ${label}${ok ? `:${value}` : ':還沒讀到'}</div>`;
+  const others = texts.length - (r.dueDate ? 1 : 0) - (r.amount != null ? 1 : 0);
+  return row(!!r.dueDate, '截止日(第一段條碼)', r.dueDate ? formatDate(r.dueDate) : '')
+    + row(r.amount != null, '金額(第三段條碼)', money(r.amount))
+    + (others > 0 ? `<div class="muted small">另外讀到 ${others} 個條碼</div>` : '');
 }
 
 function showImage(src) {

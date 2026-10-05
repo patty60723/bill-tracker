@@ -52,31 +52,75 @@ export async function compressImage(file, maxDim = 1800, quality = 0.82) {
   }
 }
 
-export async function readBarcodes(file) {
+const MAX_SCAN_DIM = 4096; // 手機照片原尺寸大約 4000 px,不先縮小:繳費單的條碼線很細
+
+let nativeDetectorPromise;
+/** 瀏覽器內建的條碼偵測(Android Chrome 有,很快);沒有就回傳 null。 */
+function nativeDetector() {
+  nativeDetectorPromise ??= (async () => {
+    if (!('BarcodeDetector' in window)) return null;
+    const supported = await window.BarcodeDetector.getSupportedFormats();
+    const formats = NATIVE_FORMATS.filter((f) => supported.includes(f));
+    return formats.length ? new window.BarcodeDetector({ formats }) : null;
+  })().catch(() => null);
+  return nativeDetectorPromise;
+}
+
+/**
+ * 在一張 canvas 上找條碼:先用內建偵測,再用 zxing。
+ * 錯誤不丟出去,收集在 errors 裡(顯示在「辨識細節」)。
+ */
+export async function detectCanvas(canvas, { errors = [] } = {}) {
   const texts = new Set();
-  const canvas = await toCanvas(file, 2400);
-  const imageData = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
-
-  if ('BarcodeDetector' in window) {
-    try {
-      const supported = await window.BarcodeDetector.getSupportedFormats();
-      const formats = NATIVE_FORMATS.filter((f) => supported.includes(f));
-      if (formats.length) {
-        for (const r of await new window.BarcodeDetector({ formats }).detect(canvas)) texts.add(r.rawValue);
-      }
-    } catch { /* 有些瀏覽器宣稱支援但實際丟錯,交給 zxing */ }
+  try {
+    const native = await nativeDetector();
+    if (native) for (const r of await native.detect(canvas)) texts.add(r.rawValue);
+  } catch (e) {
+    errors.push(`內建條碼偵測:${e.message || e}`);
   }
-
   try {
     const zx = await loadZXing();
+    const imageData = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height);
     const results = await zx.readBarcodes(imageData, {
       formats: ZXING_FORMATS, tryHarder: true, tryRotate: true, maxNumberOfSymbols: 12,
     });
     for (const r of results) if (r.isValid && r.text) texts.add(r.text);
   } catch (e) {
-    console.warn('zxing 掃描失敗', e);
+    errors.push(`zxing:${e.message || e}`);
   }
   return [...texts];
+}
+
+function cropCanvas(src, x, y, w, h) {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  c.getContext('2d').drawImage(src, x, y, w, h, 0, 0, w, h);
+  return c;
+}
+
+/**
+ * 讀照片裡的條碼:整張(原解析度)掃一次,isEnough(texts) 還不滿足再把照片切成
+ * 重疊的橫條各掃一次(條碼常在帳單下方,切小一點比較容易對準)。
+ * @returns {{ texts: string[], errors: string[] }}
+ */
+export async function readBarcodes(file, { isEnough = () => false } = {}) {
+  const errors = [];
+  const found = new Set();
+  let canvas;
+  try {
+    canvas = await toCanvas(file, MAX_SCAN_DIM);
+  } catch (e) {
+    return { texts: [], errors: [`讀不到照片:${e.message || e}`] };
+  }
+  const add = (list) => list.forEach((t) => found.add(t));
+  add(await detectCanvas(canvas, { errors }));
+  const { width: W, height: H } = canvas;
+  const size = Math.round(H / 3);
+  for (let y = H - size; y >= 0 && !isEnough([...found]); y -= Math.round(size / 2)) {
+    add(await detectCanvas(cropCanvas(canvas, 0, y, W, size), { errors }));
+  }
+  return { texts: [...found], errors: [...new Set(errors)] };
 }
 
 /**

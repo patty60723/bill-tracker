@@ -6,6 +6,11 @@ import { buildReminders, monthSummary, nextPeriod, occursIn, periodDates } from 
 import { buildICS } from '../src/ics.js';
 
 const TODAY = '2026-10-05';
+// amountRank 是內部用的排序資訊,比對結果時略過
+const parse = (text) => {
+  const { amountRank, ...rest } = parseBillText(text, TODAY);
+  return rest;
+};
 
 test('超商三段式條碼:民國年截止日、金額、應繳月份', () => {
   const r = parseConvenienceBarcodes(['151031K6A', '0000123456789012', '1510AB000001234'], TODAY);
@@ -40,7 +45,7 @@ test('OCR:欄位式(關鍵字與值在同一行,中文字被空白隔開)', () =
 出 帳 日 期 115 年 09 月 28 日
 繳費 截止 日 115 年 10 月 15 日
 本 期 應 繳 總 金 額 899 元`;
-  assert.deepEqual(parseBillText(text, TODAY), { amount: 899, dueDate: '2026-10-15' });
+  assert.deepEqual(parse(text), { amount: 899, dueDate: '2026-10-15' });
 });
 
 test('OCR:一行式、西元年、最低應繳不能當成應繳金額', () => {
@@ -50,7 +55,7 @@ test('OCR:一行式、西元年、最低應繳不能當成應繳金額', () => {
 最 低 應 繳 金 額 : 1,235
 本 期 應 繳 總 金 額 : NT$12,345
 繳 款 截止 日 : 2026/10/08`;
-  assert.deepEqual(parseBillText(text, TODAY), { amount: 12345, dueDate: '2026-10-08' });
+  assert.deepEqual(parse(text), { amount: 12345, dueDate: '2026-10-08' });
 });
 
 test('OCR:表格式(值在下一行,同一列還有計費期間)', () => {
@@ -60,17 +65,17 @@ test('OCR:表格式(值在下一行,同一列還有計費期間)', () => {
 本 期 應 繳 金 額 | 繳費 期 限
 | 115/07/15~115/09/14 | 1,286 | 115/10/27 |
 收費 日 期 115 年 09 月 20 日 _ 抄 表 日 期 115/09/14`;
-  assert.deepEqual(parseBillText(text, TODAY), { amount: 1286, dueDate: '2026-10-27' });
+  assert.deepEqual(parse(text), { amount: 1286, dueDate: '2026-10-27' });
 });
 
 test('OCR:表頭與數值之間多一行雜訊(真實輸出)', () => {
   const text = `台 灣 自 來 水 公司 水 費 通 知 單\n用 水 地 址 : 臺 北市 中 正 區 某 某 路 一 段 1 號 水 號 :K-12-345678-9\n\n計 費 期 間 本 期 應 繳 金 額 繳費 期 限\n\ni 1\n115/07/15~115/09/14 NT$ 1,286 115/10/27\n\n收費 日 期 115 年 09 月 20 日 _ 抄 表 日 期 115/09/14`;
-  assert.deepEqual(parseBillText(text, TODAY), { amount: 1286, dueDate: '2026-10-27' });
+  assert.deepEqual(parse(text), { amount: 1286, dueDate: '2026-10-27' });
 });
 
 test('OCR:表格亂掉找不到關鍵字時,猜近期最晚的日期並標記為推測', () => {
   const text = `[wm  [smmasu] asom |\n收費 日 期 115 年 09 月 20 日 _ 抄 表 日 期 115/09/14\n115/10/27`;
-  assert.deepEqual(parseBillText(text, TODAY), { dueDate: '2026-10-27', dueDateGuessed: true });
+  assert.deepEqual(parse(text), { dueDate: '2026-10-27', dueDateGuessed: true });
 });
 
 test('OCR:全形數字與 O/l 誤認', () => {
@@ -79,15 +84,29 @@ test('OCR:全形數字與 O/l 誤認', () => {
 });
 
 test('OCR:繳費帳號與銀行代碼', () => {
-  assert.deepEqual(parseBillText('銀 行 代 碼 : 822 中 國 信託\n繳 費 帳 號 : 9876 5432 1098 7654', TODAY),
+  assert.deepEqual(parse('銀 行 代 碼 : 822 中 國 信託\n繳 費 帳 號 : 9876 5432 1098 7654', TODAY),
     { accountNo: '9876543210987654', bankCode: '822' });
   // 帳號在下一行、前面有 (812)
-  assert.deepEqual(parseBillText('ATM 轉 帳 帳 號\n(812) 12345678901234', TODAY),
+  assert.deepEqual(parse('ATM 轉 帳 帳 號\n(812) 12345678901234', TODAY),
     { accountNo: '12345678901234', bankCode: '812' });
   // 最後一組不足 4 碼
   assert.equal(parseBillText('繳費帳號:1234 5678 9012 34', TODAY).accountNo, '12345678901234');
   // 扣款帳號不是繳費帳號;日期、金額不會被當成帳號
   assert.equal(parseBillText('扣 款 帳 號 1234567890123\n繳費期限 115/10/27 金額 1,286', TODAY).accountNo, undefined);
+});
+
+test('真實帳單(社區管理費,聯邦銀行繳款書)的 OCR 輸出', async () => {
+  const fs = await import('node:fs');
+  const read = (f) => fs.readFileSync(new URL(`./fixtures/${f}`, import.meta.url), 'utf8');
+  const texts = [read('mgmt-fee-pass1.txt'), read('mgmt-fee-pass2.txt')];
+  const r = mergeScan([], texts, TODAY);
+  assert.equal(r.amount, 4504); // 不是明細第一項的 3,304
+  assert.equal(r.accountNo, '99100004002171');
+  assert.equal(r.bankCode, '803'); // 「ATM 代碼」後面隔兩行才出現
+  assert.equal(r.period, '2026-09'); // 「115 年 09-10 月」
+  assert.equal(r.cycleMonths, 2);
+  // 「應 弧 金 額」:錯一個字也認得
+  assert.equal(parse('應 弧 金 額 | $4,504').amount, 4504);
 });
 
 test('mergeScan:條碼優先;關鍵字結果優先於推測', () => {

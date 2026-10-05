@@ -59,9 +59,32 @@ const DUE_KEYWORDS = [
 ];
 const AMOUNT_KEYWORDS = [
   '本期應繳總金額', '本期應繳金額', '應繳總金額', '應繳金額', '本期應付金額', '應付總金額', '應付金額',
-  '繳費金額', '繳款金額', '應繳費用', '本期費用', '總金額', '合計', '總計', '金額',
+  '繳費金額', '繳款金額', '總金額', '合計', '總計', '本期費用', '金額',
+  '應繳費用', // 常是明細表的表頭(底下是各項費用),所以排最後
 ];
-const AMOUNT_SKIP = /最低|已繳|上期|前期|預繳|折抵/;
+const AMOUNT_SKIP = /最低|已繳|上期|前期|預繳|折抵|手續費/;
+
+const escapeRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/**
+ * 關鍵字比對器,依可靠度排名(rank 越小越可靠)。
+ * 4 個字以上、而且含有「期限 / 截止 / 金額」這類特徵詞的關鍵字,另外允許「錯一個字」
+ * (OCR 常把「繳」看成「弧」之類),排在同一個關鍵字的正確版本後面。
+ * 「繳費日期」這種就不放寬,不然「收費日期」也會被當成截止日。
+ */
+const FUZZY_OK = /期限|截止|金額/;
+function matchers(keywords) {
+  return keywords.flatMap((kw, i) => {
+    const list = [{ re: new RegExp(escapeRe(kw)), rank: i * 2 }];
+    if ([...kw].length >= 4 && FUZZY_OK.test(kw)) {
+      const chars = [...kw];
+      const alts = chars.map((_, j) => chars.map((c, k) => (k === j ? '[^\\s\\d]' : escapeRe(c))).join(''));
+      list.push({ re: new RegExp(alts.join('|')), rank: i * 2 + 1 });
+    }
+    return list;
+  }).sort((a, b) => a.rank - b.rank);
+}
+const DUE_MATCHERS = matchers(DUE_KEYWORDS);
+const AMOUNT_MATCHERS = matchers(AMOUNT_KEYWORDS);
 
 const CJK = '\\u3400-\\u9fff\\uf900-\\ufaff';
 
@@ -99,18 +122,19 @@ const latest = (dates) => dates.map((d) => d.date).sort().at(-1);
  * 表格式帳單的值常在下一行,而 OCR 有時會在中間多吐一行雜訊。
  */
 function regionsAfter(lines, keyword, skip) {
+  const re = typeof keyword === 'string' ? new RegExp(escapeRe(keyword)) : keyword;
   const regions = [];
   lines.forEach((line, i) => {
-    const k = line.indexOf(keyword);
-    if (k < 0 || skip?.test(line)) return;
-    regions.push([line.slice(k + keyword.length), ...lines.slice(i + 1, i + 3)].join(' \n '));
+    const m = line.match(re);
+    if (!m || skip?.test(line)) return;
+    regions.push([line.slice(m.index + m[0].length), ...lines.slice(i + 1, i + 3)].join(' \n '));
   });
   return regions;
 }
 
 function findDueDate(lines, today) {
-  for (const kw of DUE_KEYWORDS) {
-    for (const region of regionsAfter(lines, kw)) {
+  for (const { re } of DUE_MATCHERS) {
+    for (const region of regionsAfter(lines, re)) {
       // 截止日通常是附近日期裡最晚的那個(計費期間、出帳日都比較早)
       const dates = allDates(region).filter((d) => near(d.date, today, BARCODE_WINDOW_DAYS));
       if (dates.length) return latest(dates);
@@ -128,11 +152,12 @@ function findAmountIn(region) {
   return (nums.find((n) => n.marked) || nums[0])?.value ?? null;
 }
 
+/** @returns {{ amount: number, rank: number } | null} rank 越小,找到它的關鍵字越可靠 */
 function findAmount(lines) {
-  for (const kw of AMOUNT_KEYWORDS) {
-    for (const region of regionsAfter(lines, kw, AMOUNT_SKIP)) {
+  for (const { re, rank } of AMOUNT_MATCHERS) {
+    for (const region of regionsAfter(lines, re, AMOUNT_SKIP)) {
       const amount = findAmountIn(region);
-      if (amount != null) return amount;
+      if (amount != null) return { amount, rank };
     }
   }
   return null;
@@ -145,6 +170,19 @@ const ACCOUNT_SKIP = /扣款帳號|扣繳帳號|約定帳號/; // 這些是「�
 const ACCOUNT_RE = /(?<![\d-])(\d{4}(?:[ -]\d{4}){1,2}(?:[ -]\d{1,4})?|\d{10,16})(?![\d-])/;
 const BANK_CODE_RE = /(?:銀行代[碼號]|金融機構代[碼號]|代收行代[碼號]|轉入行代[碼號]|銀行)\s*[:]?\s*\(?(\d{3})\)?(?!\d)/;
 
+/** 銀行代碼:先找「銀行代碼 822」這種寫法,再找「代碼」後面(可能隔一兩行)單獨的 3 位數。 */
+function findBankCode(lines) {
+  const direct = lines.join('\n').match(BANK_CODE_RE)?.[1];
+  if (direct) return direct;
+  for (const kw of ['代碼', '代號']) {
+    for (const region of regionsAfter(lines, kw)) {
+      const m = region.match(/(?<![\d,.])(\d{3})(?![\d,])/);
+      if (m) return m[1];
+    }
+  }
+  return null;
+}
+
 function findPayAccount(lines) {
   for (const kw of ACCOUNT_KEYWORDS) {
     for (const region of regionsAfter(lines, kw, ACCOUNT_SKIP)) {
@@ -154,7 +192,7 @@ function findPayAccount(lines) {
       if (!m) continue;
       const accountNo = m[1].replace(/[ -]/g, '');
       if (accountNo.length < 10 || accountNo.length > 16) continue;
-      const bank = lines.join('\n').match(BANK_CODE_RE)?.[1] || paren?.[1];
+      const bank = paren?.[1] || findBankCode(lines);
       return { accountNo, ...(bank ? { bankCode: bank } : {}) };
     }
   }
@@ -165,11 +203,25 @@ function findPayAccount(lines) {
  * OCR 出來的全文 → { amount?, dueDate?, dueDateGuessed?, accountNo?, bankCode? }。
  * 先找關鍵字;找不到截止日關鍵字時,退而求其次猜「近期內最晚的日期」(dueDateGuessed = true)。
  */
+/** 「115 年 09-10 月」這種寫法 → 帳單月份(起始月)與週期。 */
+function findPeriodRange(lines) {
+  const m = lines.join('\n').match(/(?<!\d)(\d{3,4})\s*年\s*(\d{1,2})\s*[-~至到]\s*(\d{1,2})\s*月/);
+  if (!m) return null;
+  const year = normalizeYear(+m[1]);
+  const from = +m[2];
+  const to = +m[3];
+  if (!validDate(year, from, 1) || !validDate(year, to, 1)) return null;
+  const months = ((to - from + 12) % 12) + 1;
+  if (![2, 3, 6, 12].includes(months)) return null;
+  return { period: `${year}-${String(from).padStart(2, '0')}`, cycleMonths: months };
+}
+
 export function parseBillText(text, today = todayISO()) {
   const lines = normalizeOcrText(text).split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
   const result = {};
-  const amount = findAmount(lines);
-  if (amount != null) result.amount = amount;
+  const found = findAmount(lines);
+  if (found) Object.assign(result, { amount: found.amount, amountRank: found.rank });
+  Object.assign(result, findPeriodRange(lines));
   Object.assign(result, findPayAccount(lines));
   const due = findDueDate(lines, today);
   if (due) {
@@ -189,15 +241,22 @@ export function parseBillText(text, today = todayISO()) {
 
 /**
  * 合併多種來源;條碼比 OCR 可靠,優先採用。
- * ocrTexts 可以是好幾次 OCR 的結果(不同版面分析模式),依序取第一個找到的。
+ * ocrTexts 可以是好幾次 OCR 的結果(不同版面分析模式)。
  */
 export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO()) {
   const fromBarcode = parseConvenienceBarcodes(barcodeTexts, today);
   const texts = (Array.isArray(ocrTexts) ? ocrTexts : [ocrTexts]).filter(Boolean).map((t) => parseBillText(t, today));
   const fromText = {};
+  let amountRank = Infinity;
   for (const r of texts) {
-    if (fromText.amount == null && r.amount != null) fromText.amount = r.amount;
-    if (!fromText.accountNo && r.accountNo) Object.assign(fromText, { accountNo: r.accountNo, bankCode: r.bankCode });
+    // 好幾次 OCR 都找到金額時,採用「找到它的關鍵字最可靠」的那個
+    if (r.amount != null && r.amountRank < amountRank) {
+      fromText.amount = r.amount;
+      amountRank = r.amountRank;
+    }
+    if (!fromText.accountNo && r.accountNo) fromText.accountNo = r.accountNo;
+    if (!fromText.bankCode && r.bankCode && r.accountNo === fromText.accountNo) fromText.bankCode = r.bankCode;
+    if (!fromText.period && r.period) Object.assign(fromText, { period: r.period, cycleMonths: r.cycleMonths });
     if (r.dueDate && (!fromText.dueDate || (fromText.dueDateGuessed && !r.dueDateGuessed))) {
       fromText.dueDate = r.dueDate;
       fromText.dueDateGuessed = !!r.dueDateGuessed;
