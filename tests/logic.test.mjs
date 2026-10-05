@@ -1,7 +1,7 @@
 // node --test tests/
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseBillText, parseConvenienceBarcodes, mergeScan } from '../src/parse.js';
+import { parseBillText, parseConvenienceBarcodes, parsePaytaxQr, mergeScan } from '../src/parse.js';
 import { buildReminders, monthSummary, nextPeriod, occursIn, periodDates } from '../src/schedule.js';
 import { buildICS } from '../src/ics.js';
 
@@ -112,12 +112,38 @@ test('真實帳單(社區管理費,聯邦銀行繳款書)的 OCR 輸出', async 
   const texts = [read('mgmt-fee-pass1.txt'), read('mgmt-fee-pass2.txt')];
   const r = mergeScan([], texts, TODAY);
   assert.equal(r.amount, 4504); // 不是明細第一項的 3,304
-  assert.equal(r.accountNo, '99100004002171');
+  assert.equal(r.accountNo, '12345678901234');
   assert.equal(r.bankCode, '803'); // 「ATM 代碼」後面隔兩行才出現
   assert.equal(r.period, '2026-09'); // 「115 年 09-10 月」
   assert.equal(r.cycleMonths, 2);
   // 「應 弧 金 額」:錯一個字也認得
   assert.equal(parse('應 弧 金 額 | $4,504').amount, 4504);
+});
+
+// 稅單(地價稅)。銷帳編號等號碼已換成假的,格式與真實稅單相同
+const TAX_QR = 'https://paytax.nat.gov.tw/QRCODE.aspx?par=113311234567890123456000000050214120414010671687';
+
+test('稅單 QR Code:繳款類別、銷帳編號、金額、繳納截止日', () => {
+  assert.deepEqual(parsePaytaxQr(TAX_QR, TODAY),
+    { bankCode: '11331', accountNo: '1234567890123456', amount: 502, dueDate: '2025-12-04' });
+  // 和其他條碼一起讀到時,QR Code 的資料優先
+  const r = parseConvenienceBarcodes([TAX_QR, '1412046AM', 'F301955114019403388', '0003W0000000502'], TODAY);
+  assert.equal(r.accountNo, '1234567890123456');
+  assert.equal(r.bankCode, '11331');
+  assert.equal(r.amount, 502);
+  assert.equal(r.dueDate, '2025-12-04');
+});
+
+test('稅單 OCR:沒有 QR Code 時從「銷帳編號」「繳款類別」「繳納截止日」表格讀', async () => {
+  const fs = await import('node:fs');
+  const text = fs.readFileSync(new URL('./fixtures/land-tax-pass1.txt', import.meta.url), 'utf8');
+  const r = parse(text);
+  assert.equal(r.accountNo, '1234567890123456');
+  assert.equal(r.bankCode, '11331');
+  assert.equal(r.dueDate, '2025-12-04'); // 表頭 OCR 成「級納截止日」,值是 6 碼的 141204
+  // 掃到 QR Code 時,以 QR Code 為準(OCR 可能看錯一個數字)
+  const merged = mergeScan([TAX_QR.replace('1234567890123456', '1234567890123457')], [text], TODAY);
+  assert.equal(merged.accountNo, '1234567890123457');
 });
 
 test('mergeScan:條碼優先;關鍵字結果優先於推測', () => {

@@ -40,12 +40,13 @@ const accountText = (o) => (o.accountNo ? `${o.bankCode ? `(${o.bankCode}) ` : '
 /** 繳費帳號欄位:銀行代碼 + 帳號 + 複製按鈕。 */
 function accountFields(o) {
   return `<div class="account-field">
-    <span class="label-text">繳費帳號 <span class="muted small">(ATM / 網銀轉帳用,可不填)</span></span>
+    <span class="label-text">繳費帳號 / 銷帳編號 <span class="muted small">(ATM、網銀繳費用,可不填)</span></span>
     <div class="account-row">
-      <input name="bankCode" inputmode="numeric" maxlength="3" placeholder="銀行代碼" value="${esc(o.bankCode)}" aria-label="銀行代碼">
-      <input name="accountNo" inputmode="numeric" placeholder="帳號" value="${esc(o.accountNo)}" aria-label="繳費帳號">
+      <input name="bankCode" inputmode="numeric" maxlength="5" placeholder="代碼" value="${esc(o.bankCode)}" aria-label="銀行代碼或繳款類別">
+      <input name="accountNo" inputmode="numeric" placeholder="帳號或銷帳編號" value="${esc(o.accountNo)}" aria-label="繳費帳號或銷帳編號">
       <button type="button" class="btn small" data-copy-account>📋 複製</button>
     </div>
+    <span class="muted small">轉帳:銀行代碼 + 帳號。繳稅:繳款類別(5 碼)+ 銷帳編號</span>
   </div>`;
 }
 
@@ -506,10 +507,16 @@ async function renderBillForm(id, params) {
     } else missing.push('截止日');
     if (r.period && /^\d{4}-\d{2}$/.test(r.period)) field('period').value = r.period;
     if (r.cycleMonths) field('cycleMonths').value = r.cycleMonths;
+    // 帳單沒寫月份、截止日又離目前選的月份很遠(例如掃去年的稅單):帳單月份改成截止日那個月
+    if (!r.period && r.dueDate && field('period').value) {
+      const [py, pm] = field('period').value.split('-').map(Number);
+      const [dy, dm] = r.dueDate.split('-').map(Number);
+      if (Math.abs((dy * 12 + dm) - (py * 12 + pm)) > 1) field('period').value = r.dueDate.slice(0, 7);
+    }
     if (r.accountNo && !field('accountNo').value) {
       field('accountNo').value = r.accountNo;
       if (r.bankCode) field('bankCode').value = r.bankCode;
-      found.push(`繳費帳號 ${accountText(r)}`);
+      found.push(r.taxQr ? `繳款類別 ${r.bankCode}、銷帳編號 ${r.accountNo}` : `繳費帳號 ${accountText(r)}`);
     }
 
     const lines = [];

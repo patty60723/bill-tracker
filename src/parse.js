@@ -25,8 +25,35 @@ function twoDigitYearDate(yy, mm, dd, today) {
   return candidates[0] || null;
 }
 
+/**
+ * 稅單上的「全國繳稅網」QR Code(https://paytax.nat.gov.tw/QRCODE.aspx?par=…)。
+ * par 開頭依序是:繳款類別 5 碼 + 銷帳編號 16 碼 + 繳款金額 10 碼 + 繳納截止日 6 碼(民國 YYMMDD),
+ * 正是用 ATM / 網銀 / 信用卡繳稅時要輸入的四個欄位。
+ */
+export function parsePaytaxQr(text, today = todayISO()) {
+  const m = text.match(/paytax\.nat\.gov\.tw\/QRCODE\.aspx\?par=(\d{37,})/i);
+  if (!m) return null;
+  const par = m[1];
+  const amount = Number(par.slice(21, 31));
+  const dueDate = twoDigitYearDate(+par.slice(31, 33), +par.slice(33, 35), +par.slice(35, 37), today);
+  return {
+    bankCode: par.slice(0, 5), // 繳款類別(放在「代碼」欄)
+    accountNo: par.slice(5, 21), // 銷帳編號
+    ...(amount > 0 ? { amount } : {}),
+    ...(dueDate ? { dueDate } : {}),
+  };
+}
+
 export function parseConvenienceBarcodes(texts, today = todayISO()) {
   const result = {};
+  // 稅單 QR Code 資訊最完整,先用它
+  for (const raw of texts) {
+    const tax = parsePaytaxQr(raw, today);
+    if (tax) {
+      Object.assign(result, tax, { taxQr: true });
+      break;
+    }
+  }
   for (const raw of texts) {
     const t = raw.trim().toUpperCase().replace(/^\*|\*$/g, '');
     if (/^\d{6}[0-9A-Z]{3}$/.test(t)) {
@@ -54,7 +81,7 @@ export function parseConvenienceBarcodes(texts, today = todayISO()) {
 
 // 依可靠程度排序:越前面越優先
 const DUE_KEYWORDS = [
-  '繳費截止日', '繳款截止日', '繳費期限', '繳款期限', '繳納期限', '限繳日期', '最後繳費日', '最後繳款日',
+  '繳費截止日', '繳款截止日', '繳納截止日', '繳費期限', '繳款期限', '繳納期限', '限繳日期', '最後繳費日', '最後繳款日',
   '代收期限', '截止日期', '截止日', '到期日', '繳費日期', '期限',
 ];
 const AMOUNT_KEYWORDS = [
@@ -133,6 +160,11 @@ function looseDates(text, today) {
     const d = validDate(normalizeYear(+m[1]), +m[2], +m[3]);
     if (d) out.push({ date: d });
   }
+  // 6 碼 YYMMDD(稅單的「繳納截止日 141204」= 民國 114 年 12 月 4 日)
+  for (const m of text.matchAll(/(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)/g)) {
+    const d = twoDigitYearDate(+m[1], +m[2], +m[3], today);
+    if (d) out.push({ date: d });
+  }
   return out;
 }
 
@@ -184,7 +216,11 @@ function findAmount(lines) {
 }
 
 // 轉帳/ATM 繳費用的帳號
-const ACCOUNT_KEYWORDS = ['繳費帳號', '繳款帳號', '轉帳帳號', '虛擬帳號', '匯款帳號', '轉入帳號', '專屬帳號', '繳費帳戶', '繳款帳戶', '帳號'];
+const ACCOUNT_KEYWORDS = [
+  '繳費帳號', '繳款帳號', '轉帳帳號', '虛擬帳號', '匯款帳號', '轉入帳號', '專屬帳號', '繳費帳戶', '繳款帳戶',
+  '銷帳編號', // 稅單、部分帳單用 ATM 繳費時輸入的是銷帳編號
+  '帳號',
+];
 const ACCOUNT_SKIP = /扣款帳號|扣繳帳號|約定帳號/; // 這些是「從哪個帳戶扣」,不是要繳進去的帳號
 // 4 碼一組(1234 5678 9012 3456 / 1234-5678-9012-34)或一整串 10–16 碼
 const ACCOUNT_RE = /(?<![\d-])(\d{4}(?:[ -]\d{4}){1,2}(?:[ -]\d{1,4})?|\d{10,16})(?![\d-])/;
@@ -194,6 +230,11 @@ const BANK_CODE_RE = /(?:銀行代[碼號]|金融機構代[碼號]|代收行代[
 function findBankCode(lines) {
   const direct = lines.join('\n').match(BANK_CODE_RE)?.[1];
   if (direct) return direct;
+  // 稅單:「繳款類別」5 碼(例如 11331),表頭在上、數值在下一行
+  for (const region of regionsAfter(lines, '繳款類別')) {
+    const m = region.match(/(?<!\d)(\d{5})(?!\d)/);
+    if (m) return m[1];
+  }
   for (const kw of ['代碼', '代號']) {
     for (const region of regionsAfter(lines, kw)) {
       const m = region.match(/(?<![\d,.])(\d{3})(?![\d,])/);
