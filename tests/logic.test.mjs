@@ -78,6 +78,17 @@ test('OCR:表格亂掉找不到關鍵字時,猜近期最晚的日期並標記為
   assert.deepEqual(parse(text), { dueDate: '2026-10-27', dueDateGuessed: true });
 });
 
+test('OCR:繳款截止日後面沒寫年份、或擠成一串數字', () => {
+  assert.equal(parse('繳款截止日:10月31日').dueDate, '2026-10-31');
+  assert.equal(parse('繳 款 截止 日 10/31').dueDate, '2026-10-31');
+  assert.equal(parse('繳款截止日 1151031').dueDate, '2026-10-31');
+  assert.equal(parse('繳款截止日 20261031').dueDate, '2026-10-31');
+  // 12 月時看到 1/10 → 明年
+  assert.equal(parseBillText('繳款截止日 1/10', '2026-12-20').dueDate, '2027-01-10');
+  // 沒有截止日關鍵字的地方,不亂把 10/31、1151031 當日期
+  assert.equal(parse('電號 1151031 抄表 10/31').dueDate, undefined);
+});
+
 test('OCR:全形數字與 O/l 誤認', () => {
   assert.equal(parseBillText('繳費期限:１１５／１０／２８', TODAY).dueDate, '2026-10-28');
   assert.equal(parseBillText('繳費期限 1l5/1O/28', TODAY).dueDate, '2026-10-28');

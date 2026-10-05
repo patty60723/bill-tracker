@@ -118,6 +118,25 @@ function allDates(text) {
 const latest = (dates) => dates.map((d) => d.date).sort().at(-1);
 
 /**
+ * 只用在截止日關鍵字後面的寫法:沒寫年份(10月31日、10/31)、或擠成一串數字
+ * (1151031 民國、20261031 西元)。沒寫年份時取離今天最近的那一年。
+ */
+function looseDates(text, today) {
+  const out = [];
+  const year = Number(today.slice(0, 4));
+  for (const m of text.matchAll(/(?<![\d/.\-])(\d{1,2})\s*(?:月|[/.])\s*(\d{1,2})\s*日?(?![\d/.\-])/g)) {
+    const options = [year - 1, year, year + 1].map((y) => validDate(y, +m[1], +m[2])).filter(Boolean);
+    options.sort((a, b) => Math.abs(diffDays(today, a)) - Math.abs(diffDays(today, b)));
+    if (options[0]) out.push({ date: options[0] });
+  }
+  for (const m of text.matchAll(/(?<!\d)(1\d{2}|20\d{2})(\d{2})(\d{2})(?!\d)/g)) {
+    const d = validDate(normalizeYear(+m[1]), +m[2], +m[3]);
+    if (d) out.push({ date: d });
+  }
+  return out;
+}
+
+/**
  * 關鍵字後面的文字:同一行剩下的部分 + 後面兩行。
  * 表格式帳單的值常在下一行,而 OCR 有時會在中間多吐一行雜訊。
  */
@@ -136,7 +155,8 @@ function findDueDate(lines, today) {
   for (const { re } of DUE_MATCHERS) {
     for (const region of regionsAfter(lines, re)) {
       // 截止日通常是附近日期裡最晚的那個(計費期間、出帳日都比較早)
-      const dates = allDates(region).filter((d) => near(d.date, today, BARCODE_WINDOW_DAYS));
+      let dates = allDates(region).filter((d) => near(d.date, today, BARCODE_WINDOW_DAYS));
+      if (!dates.length) dates = looseDates(region, today).filter((d) => near(d.date, today, BARCODE_WINDOW_DAYS));
       if (dates.length) return latest(dates);
     }
   }
