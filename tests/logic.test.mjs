@@ -122,3 +122,19 @@ test('ICS:每個固定繳費兩個重複事件與提醒', () => {
   assert.match(ics, /TRIGGER:-P2DT15H/);
   assert.ok(ics.endsWith('END:VCALENDAR\r\n'));
 });
+
+test('suggestTemplateDays:同月截止、隔月截止、沒填截止日', async () => {
+  const { suggestTemplateDays } = await import('../src/schedule.js');
+  assert.deepEqual(suggestTemplateDays('2026-10', '2026-10-20', '2026-10-05'), { arrivalDay: 5, dueDay: 20 });
+  assert.deepEqual(suggestTemplateDays('2026-10', '2026-10-03', '2026-10-05'), { arrivalDay: 1, dueDay: 3 });
+  assert.deepEqual(suggestTemplateDays('2026-09', '2026-10-10', '2026-10-05'), { arrivalDay: 20, dueDay: 10 });
+  assert.deepEqual(suggestTemplateDays('2026-10', '2026-11-10', '2026-10-25'), { arrivalDay: 25, dueDay: 10 });
+  assert.deepEqual(suggestTemplateDays('2026-10', '2026-10-31', '2026-10-05'), { arrivalDay: 5, dueDay: 31 });
+  assert.deepEqual(suggestTemplateDays('2026-10', '', '2026-10-05'), { arrivalDay: 5, dueDay: 19 });
+  // 推出來的設定要能還原出原本的截止日
+  const { periodDates } = await import('../src/schedule.js');
+  for (const [p, due, today] of [['2026-09', '2026-10-10', '2026-10-05'], ['2026-10', '2026-10-31', '2026-10-05'], ['2026-10', '2026-11-10', '2026-10-25']]) {
+    const d = suggestTemplateDays(p, due, today);
+    assert.equal(periodDates(d, p).due, due);
+  }
+});

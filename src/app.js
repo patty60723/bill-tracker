@@ -4,10 +4,12 @@ import {
 } from './dates.js';
 import { mergeScan } from './parse.js';
 import {
-  buildReminders, DEFAULT_REMIND_DAYS, monthSummary, nextPeriod, periodDates,
+  buildReminders, CYCLES as BILL_CYCLES, cycleName, DEFAULT_REMIND_DAYS, monthSummary, nextPeriod, periodDates,
+  suggestTemplateDays,
 } from './schedule.js';
 import { buildICS } from './ics.js';
 import { compressImage, readBarcodes, readText } from './scan.js';
+import { notifyReminders, REMINDER_TEXT, SYNC_TAG } from './notify.js';
 
 // ---------- 小工具 ----------
 
@@ -64,14 +66,6 @@ async function loadAll() {
 
 // ---------- 首頁 ----------
 
-const REMINDER_TEXT = {
-  'collect-soon': (r) => `繳費單預計 ${formatDate(r.arrival)} 會到`,
-  collect: (r) => `該去拿繳費單了,${formatDate(r.due)} 截止(剩 ${diffDays(todayISO(), r.due)} 天)`,
-  missing: (r) => `這期還沒登記,截止日 ${formatDate(r.due)} 已過`,
-  overdue: (r) => `已逾期 ${-r.daysLeft} 天(${formatDate(r.due)} 截止)`,
-  'due-soon': (r) => (r.daysLeft === 0 ? '今天截止!' : `剩 ${r.daysLeft} 天截止(${formatDate(r.due)})`),
-  unpaid: (r) => `未繳,${formatDate(r.due)} 截止`,
-};
 
 function reminderCard(r) {
   const actions = r.billId
@@ -100,6 +94,7 @@ async function renderHome() {
       <a class="btn primary big" href="#/bill/new?scan=1">📷 掃描繳費單</a>
       <a class="btn big" href="#/bill/new">＋ 手動新增</a>
     </div>
+    ${notifyBanner(templates.length + bills.length)}
     <section>
       <h2>待辦提醒</h2>
       ${reminders.length ? reminders.map(reminderCard).join('') : `<div class="empty">目前沒有要處理的帳單 🎉${templates.length ? '' : '<br><a href="#/template/new">先設定固定繳費</a>,就會自動提醒你拿繳費單、繳費截止。'}</div>`}
@@ -108,6 +103,14 @@ async function renderHome() {
       <h2>${m} 月帳單 <a class="link" href="#/bills">看全部 ›</a></h2>
       ${summaryBlock(s)}
     </section>`;
+}
+
+function notifyBanner(hasData) {
+  if (!hasData || !('Notification' in window) || Notification.permission !== 'default') return '';
+  return `<div class="card reminder info">
+    <div class="grow"><div class="title">🔔 開啟通知</div><div class="sub">快截止、逾期、該去拿繳費單時,手機會跳通知提醒你</div></div>
+    <div class="actions"><button class="btn small primary" data-enable-notify>開啟</button></div>
+  </div>`;
 }
 
 function summaryBlock(s) {
@@ -162,7 +165,7 @@ function billRow(b, t, today) {
   return `<a class="card row" href="#/bill/${b.id}">
     <div class="icon">${catIcon(b.category || t?.category)}</div>
     <div class="grow">
-      <div class="title">${esc(b.name)} <span class="muted">${clips}</span></div>
+      <div class="title">${esc(b.name)} ${b.cycleMonths > 1 ? `<span class="badge">${cycleName(b.cycleMonths)}</span>` : ''} <span class="muted">${clips}</span></div>
       <div class="sub">${b.dueDate ? `${formatDate(b.dueDate)} 截止` : '未填截止日'} ${badge}</div>
     </div>
     <div class="amount">${money(b.amount)}</div>
@@ -191,7 +194,7 @@ async function renderBillForm(id, params) {
     const period = params.get('period') || todayISO().slice(0, 7);
     bill = {
       id: db.uid(), name: t?.name || '', templateId: t?.id || '', category: t?.category || 'other',
-      period, amount: t?.amount ?? '', dueDate: t ? periodDates(t, period).due : '',
+      period, cycleMonths: t?.cycleMonths || 1, amount: t?.amount ?? '', dueDate: t ? periodDates(t, period).due : '',
       status: 'unpaid', paidDate: '', paidMethod: '', notes: '', billFiles: [], proofFiles: [],
     };
   } else {
@@ -225,9 +228,27 @@ async function renderBillForm(id, params) {
       </label>
       <div class="two">
         <label>帳單月份 <input type="month" name="period" required value="${esc(bill.period)}"></label>
-        <label>金額 <input type="number" name="amount" inputmode="numeric" min="0" step="1" value="${esc(bill.amount)}" placeholder="0"></label>
+        <label>帳單週期
+          <select name="cycleMonths">${BILL_CYCLES.map(([n, label]) => `<option value="${n}" ${n === (bill.cycleMonths || 1) ? 'selected' : ''}>${label}</option>`).join('')}</select>
+        </label>
       </div>
-      <label>繳費截止日 <input type="date" name="dueDate" value="${esc(bill.dueDate)}"></label>
+      <div class="two">
+        <label>金額 <input type="number" name="amount" inputmode="numeric" min="0" step="1" value="${esc(bill.amount)}" placeholder="0"></label>
+        <label>繳費截止日 <input type="date" name="dueDate" value="${esc(bill.dueDate)}"></label>
+      </div>
+
+      <fieldset id="save-template" ${bill.templateId ? 'hidden' : ''}>
+        <label class="switch"><input type="checkbox" name="saveTemplate"> 同時存成固定繳費</label>
+        <span class="muted small">之後每期會自動提醒你拿繳費單、繳費截止</span>
+        <div id="tpl-fields" hidden>
+          <div class="two">
+            <label>繳費單大約幾號到 <select name="arrivalDay">${dayOptions(1)}</select></label>
+            <label>每期截止日 <select name="dueDay">${dayOptions(15)}</select></label>
+          </div>
+          <label>截止前幾天提醒 <input type="number" name="remindDays" min="0" max="30" value="${DEFAULT_REMIND_DAYS}"></label>
+          <p class="muted small" id="tpl-hint"></p>
+        </div>
+      </fieldset>
 
       <fieldset>
         <legend>繳費單照片</legend>
@@ -260,6 +281,34 @@ async function renderBillForm(id, params) {
     </form>`;
 
   const form = $('#bill-form');
+  const field = (n) => form.elements.namedItem(n);
+
+  // 「同時存成固定繳費」:用目前表單內容組出一個 template
+  const draftTemplate = () => ({
+    id: db.uid(),
+    name: field('name').value.trim(),
+    category: field('category').value,
+    amount: field('amount').value === '' ? '' : Number(field('amount').value),
+    cycleMonths: Number(field('cycleMonths').value),
+    anchorMonth: Number((field('period').value || todayISO()).slice(5, 7)),
+    arrivalDay: Number(field('arrivalDay').value),
+    dueDay: Number(field('dueDay').value),
+    remindDays: Number(field('remindDays').value || 0),
+    active: true,
+    notes: '',
+  });
+  let tplDaysTouched = false;
+  function updateTemplateHint() {
+    if (field('saveTemplate').checked && !tplDaysTouched) {
+      const d = suggestTemplateDays(field('period').value || todayISO().slice(0, 7), field('dueDate').value, todayISO());
+      field('arrivalDay').value = d.arrivalDay;
+      field('dueDay').value = d.dueDay;
+    }
+    const t = draftTemplate();
+    const n = nextPeriod(t, todayISO());
+    $('#tpl-hint').textContent = cycleText(t)
+      + (n ? `。${n.arrival <= todayISO() ? '本期' : '下一期'}:${formatDate(n.arrival)} 到單、${formatDate(n.due)} 截止` : '');
+  }
 
   async function drawFiles(key, containerId) {
     const box = $(`#${containerId}`);
@@ -293,12 +342,23 @@ async function renderBillForm(id, params) {
     } else if (el.name === 'paid') {
       $('#paid-fields').hidden = !el.checked;
       if (el.checked && !form.paidDate.value) form.paidDate.value = todayISO();
-    } else if (el.name === 'templateId' && el.value) {
+    } else if (el.name === 'templateId') {
+      $('#save-template').hidden = !!el.value;
+      if (!el.value) return;
       const t = templates.find((x) => x.id === el.value);
-      form.elements.namedItem('name').value = t.name;
-      form.category.value = t.category || 'other';
-      if (!form.amount.value && t.amount) form.amount.value = t.amount;
-      if (!form.dueDate.value && form.period.value) form.dueDate.value = periodDates(t, form.period.value).due;
+      field('name').value = t.name;
+      field('category').value = t.category || 'other';
+      field('cycleMonths').value = t.cycleMonths || 1;
+      if (!field('amount').value && t.amount) field('amount').value = t.amount;
+      if (!field('dueDate').value && field('period').value) field('dueDate').value = periodDates(t, field('period').value).due;
+    } else if (el.name === 'saveTemplate') {
+      $('#tpl-fields').hidden = !el.checked;
+      updateTemplateHint();
+    } else if (el.name === 'arrivalDay' || el.name === 'dueDay') {
+      tplDaysTouched = true;
+      updateTemplateHint();
+    } else if (['period', 'dueDate', 'cycleMonths'].includes(el.name) && field('saveTemplate').checked) {
+      updateTemplateHint();
     }
   });
 
@@ -374,6 +434,7 @@ async function renderBillForm(id, params) {
       templateId: fd.get('templateId'),
       category: fd.get('category'),
       period: fd.get('period'),
+      cycleMonths: Number(fd.get('cycleMonths')) || 1,
       amount: fd.get('amount') === '' ? '' : Number(fd.get('amount')),
       dueDate: fd.get('dueDate'),
       status: paid ? 'paid' : 'unpaid',
@@ -386,8 +447,15 @@ async function renderBillForm(id, params) {
     if (isNew && updated.templateId
       && bills.some((b) => b.templateId === updated.templateId && b.period === updated.period)
       && !confirm(`${formatPeriod(updated.period)}已經有一筆「${updated.name}」了,還要再新增一筆嗎?`)) return;
+    let savedTemplate = false;
+    if (!updated.templateId && fd.get('saveTemplate') === 'on') {
+      const t = { ...draftTemplate(), createdAt: new Date().toISOString() };
+      await db.put('templates', t);
+      updated.templateId = t.id;
+      savedTemplate = true;
+    }
     await db.put('bills', updated);
-    toast('已儲存');
+    toast(savedTemplate ? '已儲存,也加進固定繳費了' : '已儲存');
     go(`#/bills?month=${updated.period}`);
   };
   $('#cancel')?.addEventListener('click', async () => {
@@ -529,19 +597,17 @@ function download(name, content, type) {
 }
 
 async function renderSettings() {
-  const notif = 'Notification' in window ? Notification.permission : 'unsupported';
   const persisted = await navigator.storage?.persisted?.();
   view.innerHTML = `
     <header class="page-head"><h1>設定</h1></header>
     <section class="card col">
-      <h3>📅 加到手機行事曆(最推薦)</h3>
-      <p class="muted small">把所有固定繳費匯出成行事曆檔,用手機打開匯入後,就算沒開這個 app,到單日和截止前也會跳提醒。之後修改了固定繳費,再匯出一次即可(同一個項目會更新,不會重複)。</p>
-      <button class="btn primary" id="ics">匯出行事曆提醒 (.ics)</button>
+      <h3>🔔 通知提醒</h3>
+      ${await notifyStatusHTML()}
     </section>
     <section class="card col">
-      <h3>🔔 開 app 時跳通知</h3>
-      <p class="muted small">允許後,每天第一次打開 app 時,如果有快截止或逾期的帳單會跳通知。${notif === 'unsupported' ? '<br>這個瀏覽器不支援通知(iPhone 需要先「加入主畫面」)。' : ''}</p>
-      <button class="btn" id="notif" ${notif === 'unsupported' || notif === 'granted' ? 'disabled' : ''}>${notif === 'granted' ? '已允許通知' : notif === 'denied' ? '通知被封鎖了,請到瀏覽器設定開啟' : '允許通知'}</button>
+      <h3>📅 加到手機行事曆(準時、iPhone 也可用)</h3>
+      <p class="muted small">把所有固定繳費匯出成行事曆檔,用手機打開匯入後,就算沒開這個 app,到單日和截止前也會跳提醒。之後修改了固定繳費,再匯出一次即可(同一個項目會更新,不會重複)。</p>
+      <button class="btn primary" id="ics">匯出行事曆提醒 (.ics)</button>
     </section>
     <section class="card col">
       <h3>💾 備份</h3>
@@ -558,10 +624,15 @@ async function renderSettings() {
     if (!templates.some((t) => t.active)) return toast('還沒有啟用中的固定繳費');
     download('bill-reminders.ics', buildICS(templates, todayISO()), 'text/calendar');
   };
-  $('#notif').onclick = async () => {
-    await Notification.requestPermission();
+  $('#notif')?.addEventListener('click', async () => {
+    await enableNotifications();
     render();
-  };
+  });
+  $('#notif-test')?.addEventListener('click', async () => {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    if (!reg) return toast('通知需要用 HTTPS 開啟 app 才能用');
+    await notifyReminders(reg, { force: true });
+  });
   $('#persist')?.addEventListener('click', async () => {
     const ok = await navigator.storage.persist();
     toast(ok ? '已保護資料' : '瀏覽器沒有同意,建議先「加入主畫面」後再試');
@@ -585,21 +656,70 @@ async function renderSettings() {
 
 // ---------- 啟動 ----------
 
-async function notifyIfNeeded() {
-  if (!('Notification' in window) || Notification.permission !== 'granted') return;
-  const today = todayISO();
+
+// ---------- 通知 ----------
+
+async function setupServiceWorker() {
+  if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
   try {
-    if (localStorage.getItem('lastNotified') === today) return;
-  } catch { /* 無法讀 localStorage 就每次都通知 */ }
-  const { templates, bills } = await loadAll();
-  const urgent = buildReminders(templates, bills, today).filter((r) => r.level !== 'info');
-  if (!urgent.length) return;
-  const body = urgent.slice(0, 4).map((r) => `${r.name}:${REMINDER_TEXT[r.kind](r)}`).join('\n');
+    // sw.js 用 import 共用提醒邏輯,所以要用 module 註冊
+    await navigator.serviceWorker.register('sw.js', { type: 'module' });
+  } catch (e) {
+    console.warn('SW 註冊失敗', e);
+    return;
+  }
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const reg = await navigator.serviceWorker.ready;
+  await registerBackgroundSync(reg);
+  await notifyReminders(reg);
+}
+
+/** Android Chrome、已加到主畫面時,讓瀏覽器定期在背景叫醒 app 檢查帳單。回傳狀態字串。 */
+async function registerBackgroundSync(reg) {
+  if (!('periodicSync' in reg)) return 'unsupported';
+  try {
+    const { state } = await navigator.permissions.query({ name: 'periodic-background-sync' });
+    if (state !== 'granted') return 'not-installed';
+    await reg.periodicSync.register(SYNC_TAG, { minInterval: 6 * 60 * 60 * 1000 });
+    return 'on';
+  } catch (e) {
+    console.warn('periodicSync 註冊失敗', e);
+    return 'not-installed';
+  }
+}
+
+async function enableNotifications() {
+  if (!('Notification' in window)) return toast('這個瀏覽器不支援通知');
+  const result = await Notification.requestPermission();
+  if (result !== 'granted') return toast('沒有開啟通知,之後可以在「設定」再開');
   const reg = await navigator.serviceWorker?.getRegistration();
-  const opts = { body, tag: 'bill-reminder', icon: 'icon.svg' };
-  if (reg) await reg.showNotification(`有 ${urgent.length} 筆帳單要處理`, opts);
-  else new Notification(`有 ${urgent.length} 筆帳單要處理`, opts);
-  try { localStorage.setItem('lastNotified', today); } catch { /* ignore */ }
+  if (!reg) return;
+  await registerBackgroundSync(reg);
+  toast('通知已開啟');
+  await notifyReminders(reg);
+}
+
+async function notifyStatusHTML() {
+  if (!('Notification' in window) || !('serviceWorker' in navigator)) {
+    return '<p class="muted small">這個瀏覽器不支援通知。iPhone 要先用 Safari「分享 → 加入主畫面」,再從主畫面打開 app。</p>';
+  }
+  const perm = Notification.permission;
+  if (perm === 'denied') {
+    return '<p class="muted small">通知被封鎖了。請到手機的「設定 → 應用程式 → Chrome(或這個 app)→ 通知」打開,再回來這裡。</p>';
+  }
+  if (perm === 'default') {
+    return `<p class="muted small">開啟後:有快截止、逾期、該去拿繳費單的帳單時,手機會跳通知。</p>
+      <button class="btn primary" id="notif">開啟通知</button>`;
+  }
+  const reg = await navigator.serviceWorker.getRegistration();
+  const bg = reg ? await registerBackgroundSync(reg) : 'unsupported';
+  const bgText = {
+    on: '✅ <b>背景提醒已啟用</b>:沒開 app 時,手機也會在白天跳通知(大約一天一次,實際時間由瀏覽器決定,省電模式下可能延後)。',
+    'not-installed': '⚠️ 目前只有<b>打開 app 時</b>才會通知。要讓沒開 app 也能通知,請用 Chrome 選單的「加到主畫面 / 安裝應用程式」,再從主畫面的圖示打開。',
+    unsupported: '⚠️ 這個瀏覽器只能在<b>打開 app 時</b>通知(背景提醒目前只有 Android 的 Chrome 支援)。要準時提醒,請用下面的「加到手機行事曆」。',
+  }[bg];
+  return `<p class="small">${bgText}</p>
+    <button class="btn" id="notif-test">現在測試一次通知</button>`;
 }
 
 /** 清掉沒有任何帳單引用的檔案(例如新增帳單到一半直接關掉 app)。 */
@@ -632,7 +752,12 @@ async function render() {
   window.scrollTo(0, 0);
 }
 
-view.addEventListener('click', (e) => {
+view.addEventListener('click', async (e) => {
+  if (e.target.closest('[data-enable-notify]')) {
+    await enableNotifications();
+    render();
+    return;
+  }
   const pay = e.target.closest('[data-pay]');
   if (pay) {
     e.preventDefault();
@@ -643,8 +768,5 @@ $('#viewer').addEventListener('click', (e) => e.currentTarget.close());
 window.addEventListener('hashchange', render);
 
 render();
-notifyIfNeeded();
 collectGarbage();
-if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('sw.js').catch((e) => console.warn('SW 註冊失敗', e));
-}
+setupServiceWorker();

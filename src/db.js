@@ -1,21 +1,33 @@
 // IndexedDB:所有資料(含照片)只存在這支手機的瀏覽器裡。
-// stores: templates(固定繳費)、bills(每期帳單)、files(繳費單照片、繳費證明)
+// stores: templates(固定繳費)、bills(每期帳單)、files(繳費單照片、繳費證明)、
+//         meta(雜項狀態,例如上次通知了什麼)
+// 這個檔案也會在 service worker 裡用(背景通知),所以不能碰 DOM。
 
 const DB_NAME = 'bill-tracker';
-const VERSION = 1;
+const VERSION = 2;
 let dbPromise;
 
 function open() {
   dbPromise ??= new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, VERSION);
-    req.onupgradeneeded = () => {
+    req.onupgradeneeded = (e) => {
       const db = req.result;
-      db.createObjectStore('templates', { keyPath: 'id' });
-      const bills = db.createObjectStore('bills', { keyPath: 'id' });
-      bills.createIndex('period', 'period');
-      db.createObjectStore('files', { keyPath: 'id' });
+      if (e.oldVersion < 1) {
+        db.createObjectStore('templates', { keyPath: 'id' });
+        const bills = db.createObjectStore('bills', { keyPath: 'id' });
+        bills.createIndex('period', 'period');
+        db.createObjectStore('files', { keyPath: 'id' });
+      }
+      if (e.oldVersion < 2) db.createObjectStore('meta', { keyPath: 'key' });
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      // 另一個分頁 / service worker 要升級資料庫時,讓出連線
+      req.result.onversionchange = () => {
+        req.result.close();
+        dbPromise = undefined;
+      };
+      resolve(req.result);
+    };
     req.onerror = () => reject(req.error);
   });
   return dbPromise;
@@ -39,6 +51,8 @@ export const get = async (name, id) => wrap((await store(name)).get(id));
 export const put = async (name, value) => wrap((await store(name, 'readwrite')).put(value));
 export const del = async (name, id) => wrap((await store(name, 'readwrite')).delete(id));
 export const clear = async (name) => wrap((await store(name, 'readwrite')).clear());
+export const getMeta = async (key) => (await get('meta', key))?.value;
+export const setMeta = (key, value) => put('meta', { key, value });
 
 export async function saveFile(blob, name = '') {
   const id = uid();

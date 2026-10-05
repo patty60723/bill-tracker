@@ -104,3 +104,22 @@ export function monthSummary(bills, key) {
   const unpaid = list.filter((b) => b.status !== 'paid');
   return { count: list.length, total: sum(list), paid: sum(paid), unpaid: sum(unpaid), unpaidCount: unpaid.length };
 }
+
+export const CYCLES = [[1, '單月'], [2, '雙月'], [3, '每季'], [6, '半年'], [12, '每年']];
+export const cycleName = (n) => CYCLES.find(([m]) => m === n)?.[1] || `每 ${n} 個月`;
+
+/**
+ * 從一筆帳單推一個固定繳費的「到單日 / 截止日」預設值。
+ * 截止日直接取帳單截止日的日期;到單日在帳單月份是今天就用今天,否則 1 號。
+ * 截止日落在帳單月份的下個月時,到單日必須比截止日晚(那才代表「隔月截止」)。
+ */
+export function suggestTemplateDays(period, dueDate, today) {
+  const todayDay = Math.min(Number(today.slice(8, 10)), 28);
+  let arrivalDay = today.slice(0, 7) === period ? todayDay : 1;
+  if (!dueDate) return { arrivalDay, dueDay: Math.min(arrivalDay + 14, 28) };
+  const dueDay = Number(dueDate.slice(8, 10)) >= 29 ? 31 : Number(dueDate.slice(8, 10));
+  const sameMonth = dueDate.slice(0, 7) <= period;
+  if (sameMonth && arrivalDay > dueDay) arrivalDay = 1;
+  if (!sameMonth && arrivalDay <= dueDay) arrivalDay = dueDay >= 28 ? 28 : Math.max(dueDay + 1, 20);
+  return { arrivalDay, dueDay };
+}

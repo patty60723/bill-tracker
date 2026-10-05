@@ -138,8 +138,8 @@ h3 { margin: 0 0 4px; font-size: 1rem; }
 .form .switch input { width: 22px; height: 22px; accent-color: var(--primary); }
 .form .file-btn { align-self: flex-start; flex-direction: row; color: var(--text); font-size: .9rem; }
 .sub-legend { font-size: .9rem; color: var(--muted); }
-#paid-fields { display: flex; flex-direction: column; gap: 10px; }
-#paid-fields[hidden] { display: none; }
+#paid-fields, #tpl-fields { display: flex; flex-direction: column; gap: 10px; }
+#paid-fields[hidden], #tpl-fields[hidden] { display: none; }
 .form-actions { display: flex; gap: 10px; }
 
 .scan-box { display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: var(--radius); background: var(--info-bg); border: 1px solid var(--line); }
