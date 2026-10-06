@@ -4,6 +4,7 @@ import {
 } from './dates.js';
 import { mergeScan, parseConvenienceBarcodes, scanComplete } from './parse.js';
 import { liveScan } from './livescan.js';
+import { alertDialog, ask, confirmDialog, copyDialog } from './modal.js';
 import {
   buildReminders, CYCLES as BILL_CYCLES, cycleName, DEFAULT_REMIND_DAYS, monthSummary, nextPeriod, periodDates,
   suggestTemplateDays,
@@ -58,7 +59,7 @@ async function copyText(text, label) {
     await navigator.clipboard.writeText(text);
     toast(`已複製${label}:${text}`);
   } catch {
-    prompt(`請長按複製${label}`, text);
+    copyDialog({ title: `複製${label}`, text });
   }
 }
 
@@ -99,13 +100,17 @@ function go(hash) {
 let leaveGuard = null; // { isDirty: () => boolean, onLeave?: () => void }
 let currentHash = location.hash;
 
-/** 可以離開目前頁面嗎?有沒存的變更就問;確定離開會執行 onLeave(例如清掉沒存的照片)。 */
-function confirmLeave() {
-  if (!leaveGuard?.isDirty()) return true;
-  if (!confirm('還沒儲存的內容會不見(包含掃描帶入的資料和照片)。\n\n確定要離開嗎?')) return false;
-  leaveGuard.onLeave?.();
-  leaveGuard = null;
-  return true;
+let askingLeave = false;
+
+/** 有沒存的變更就問要不要離開;確定離開會執行 onLeave(例如清掉沒存的照片)。 */
+async function confirmLeave() {
+  return confirmDialog({
+    title: '還沒儲存,確定要離開嗎?',
+    message: '這張帳單還沒儲存,離開後掃描帶入的資料、輸入的內容和照片都會不見。',
+    ok: '離開,不儲存',
+    cancel: '繼續編輯',
+    danger: true,
+  });
 }
 
 /** 表單頁用:回傳 markDirty;儲存/刪除成功後呼叫 release() 再跳頁,就不會再問。 */
@@ -545,11 +550,21 @@ async function renderBillForm(id, params) {
     status.hidden = true;
     await redrawFiles();
   }
-  /** 已經掃過一張時,問這次是「另一張帳單」還是「同一張的另一頁」。 */
+  /** 已經掃過一張時,問這次是「另一張帳單」還是「同一張的另一頁」。回傳 false 代表使用者取消。 */
   async function startScan() {
-    if (!hasScan()) return;
-    const another = confirm('這個表單已經掃過一張了。\n\n按「確定」:這是另一張帳單 → 清掉上一張帶入的資料和照片,重新辨識\n按「取消」:同一張帳單的另一頁 → 合併兩次的結果');
-    if (another) await resetScan();
+    if (!hasScan()) return true;
+    const choice = await ask({
+      title: '這個表單已經掃過一張了',
+      message: '這次要掃的是?',
+      stacked: true,
+      actions: [
+        { label: '另一張帳單', desc: '清掉上一張帶入的資料和照片,重新辨識', value: 'another', kind: 'primary' },
+        { label: '同一張帳單的另一頁', desc: '合併兩次的結果(例如正反面)', value: 'same' },
+        { label: '取消', value: null },
+      ],
+    });
+    if (choice === 'another') await resetScan();
+    return choice !== null;
   }
   const barcodesEnough = (t) => {
     const r = parseConvenienceBarcodes(t);
@@ -561,7 +576,7 @@ async function renderBillForm(id, params) {
     const file = e.target.files[0];
     e.target.value = '';
     if (!file) return;
-    await startScan();
+    if (!(await startScan())) return;
     scan.size = await imageSize(file);
     scan.photos.push(...await addFiles('billFiles', [file]));
     setStatus('🔍 辨識條碼中…');
@@ -589,7 +604,7 @@ async function renderBillForm(id, params) {
     applyScan(result);
   };
   $('#live-btn').onclick = async () => {
-    await startScan();
+    if (!(await startScan())) return;
     const codes = await liveScan({ describe: describeBarcodes, isEnough: barcodesEnough });
     if (!codes) return;
     codes.forEach((c) => scan.barcodes.add(c));
@@ -683,7 +698,11 @@ async function renderBillForm(id, params) {
     };
     if (isNew && updated.templateId
       && bills.some((b) => b.templateId === updated.templateId && b.period === updated.period)
-      && !confirm(`${formatPeriod(updated.period)}已經有一筆「${updated.name}」了,還要再新增一筆嗎?`)) return;
+      && !(await confirmDialog({
+        title: '這個月已經有這筆了',
+        message: `${formatPeriod(updated.period)}已經有一筆「${updated.name}」,還要再新增一筆嗎?`,
+        ok: '還是新增',
+      }))) return;
     let savedTemplate = false;
     if (!updated.templateId && fd.get('saveTemplate') === 'on') {
       const t = { ...draftTemplate(), createdAt: new Date().toISOString() };
@@ -696,9 +715,14 @@ async function renderBillForm(id, params) {
     toast(savedTemplate ? '已儲存,也加進固定繳費了' : '已儲存');
     go(`#/bills?month=${updated.period}`);
   };
-  $('#cancel')?.addEventListener('click', () => go('#/')); // 有沒存的變更時,會被離開前確認攔下來問
+  $('#cancel')?.addEventListener('click', () => navigate('#/')); // 有沒存的變更時會先問
   $('#delete')?.addEventListener('click', async () => {
-    if (!confirm(`確定刪除「${bill.name}」這筆帳單和它的照片?`)) return;
+    if (!(await confirmDialog({
+      title: '刪除這筆帳單?',
+      message: `「${bill.name}」和它的繳費單照片、繳費證明都會一起刪除,無法復原。`,
+      ok: '刪除',
+      danger: true,
+    }))) return;
     await db.deleteBill(await db.get('bills', bill.id));
     for (const fid of addedFiles) await db.del('files', fid);
     guard.release();
@@ -851,7 +875,12 @@ async function renderTemplateForm(id) {
     go('#/templates');
   };
   $('#delete')?.addEventListener('click', async () => {
-    if (!confirm(`刪除「${t.name}」?(已登記的帳單紀錄會保留)`)) return;
+    if (!(await confirmDialog({
+      title: '刪除這個固定繳費?',
+      message: `之後不會再提醒「${t.name}」。已經登記的帳單紀錄會保留。`,
+      ok: '刪除',
+      danger: true,
+    }))) return;
     await db.del('templates', t.id);
     guard.release();
     go('#/templates');
@@ -912,12 +941,18 @@ async function renderSettings() {
   };
   $('#import').onchange = async (e) => {
     const file = e.target.files[0];
-    if (!file || !confirm('匯入會「取代」目前所有資料,確定嗎?')) return;
+    e.target.value = '';
+    if (!file || !(await confirmDialog({
+      title: '用備份取代目前的資料?',
+      message: '匯入會清掉這支手機上目前所有的帳單、固定繳費和照片,換成備份檔裡的內容。',
+      ok: '取代並匯入',
+      danger: true,
+    }))) return;
     try {
       await db.importAll(JSON.parse(await file.text()));
       toast('匯入完成');
     } catch (err) {
-      alert(`匯入失敗:${err.message}`);
+      await alertDialog({ title: '匯入失敗', message: err.message });
     }
     render();
   };
@@ -1085,10 +1120,42 @@ view.addEventListener('click', async (e) => {
   }
 });
 $('#viewer').addEventListener('click', (e) => e.currentTarget.close());
-window.addEventListener('hashchange', () => {
-  if (!confirmLeave()) {
-    // 留在原頁:把網址改回來(不觸發 hashchange,畫面和資料都不動)
+/** 程式裡要換頁時用:有沒存的變更就先問。 */
+async function navigate(hash) {
+  if (leaveGuard?.isDirty()) {
+    if (askingLeave) return;
+    askingLeave = true;
+    const leave = await confirmLeave();
+    askingLeave = false;
+    if (!leave) return;
+    leaveGuard.onLeave?.();
+    leaveGuard = null;
+  }
+  go(hash);
+}
+
+// 點連結 / 下方分頁:在瀏覽器換頁「之前」攔下來問,這樣取消時不會多出一筆瀏覽紀錄
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('a[href^="#"]');
+  if (!a || !leaveGuard?.isDirty() || a.getAttribute('href') === location.hash) return;
+  e.preventDefault();
+  navigate(a.getAttribute('href'));
+}, true);
+
+// 手機返回鍵 / 返回手勢:網址已經變了,只能事後把它改回來再問
+window.addEventListener('hashchange', async () => {
+  if (leaveGuard?.isDirty()) {
+    // 先把網址改回來(不觸發 hashchange,畫面和資料都不動),再問要不要離開
+    const target = location.hash;
     history.replaceState(null, '', currentHash || '#/');
+    if (askingLeave) return;
+    askingLeave = true;
+    const leave = await confirmLeave();
+    askingLeave = false;
+    if (!leave) return;
+    leaveGuard.onLeave?.();
+    leaveGuard = null;
+    location.hash = target; // 這次沒有 guard 了,會正常換頁
     return;
   }
   render();

@@ -12,6 +12,7 @@
   --danger-bg: #fff1eb;
   --warn-bg: #fff8e6;
   --info-bg: #eef6f5;
+  --on-bad: #ffffff;
   --radius: 14px;
   color-scheme: light;
 }
@@ -30,6 +31,7 @@
     --danger-bg: #3a2016;
     --warn-bg: #352a12;
     --info-bg: #17302c;
+    --on-bad: #1d0d04;
     color-scheme: dark;
   }
 }
@@ -239,3 +241,26 @@ dialog#viewer img { max-width: 100vw; max-height: 100vh; display: block; }
   .form .two { grid-template-columns: 1fr; }
   .stats .value { font-size: 1rem; }
 }
+
+/* 自製對話框(取代瀏覽器原生 confirm / alert) */
+dialog.modal {
+  border: 1px solid var(--line); border-radius: 18px; padding: 0;
+  width: min(360px, calc(100vw - 32px)); max-width: none;
+  background: var(--surface); color: var(--text);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .35);
+}
+dialog.modal::backdrop { background: rgba(0, 0, 0, .5); }
+dialog.modal[open] { animation: modal-in .16s ease-out; }
+@keyframes modal-in { from { opacity: 0; transform: translateY(12px) scale(.98); } }
+.modal-body { padding: 20px 18px 16px; display: flex; flex-direction: column; gap: 10px; }
+.modal-title { font-size: 1.08rem; margin: 0; }
+.modal-message { margin: 0; color: var(--muted); font-size: .95rem; line-height: 1.6; white-space: pre-line; }
+.modal-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+.modal-actions.stacked { grid-template-columns: 1fr; }
+.modal-actions .btn { min-height: 46px; font-size: 1rem; }
+.modal-actions .btn.with-desc { flex-direction: column; align-items: flex-start; text-align: left; white-space: normal; padding: 10px 14px; gap: 2px; }
+.modal-actions .btn.with-desc small { font-size: .8rem; font-weight: normal; opacity: .85; }
+.btn.danger-solid { background: var(--bad); border-color: var(--bad); color: var(--on-bad); font-weight: 600; }
+.modal-actions .btn:focus { outline: none; }
+.modal-actions .btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.modal-copy { font: inherit; font-size: 1.05rem; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); width: 100%; letter-spacing: .03em; }

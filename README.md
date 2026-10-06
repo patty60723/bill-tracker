@@ -71,6 +71,7 @@ iPhone 請用 Safari 開啟後「分享 → 加入主畫面」,通知功能才�
 | `src/scan.js` | 讀條碼(內建 BarcodeDetector + zxing-wasm)、OCR(Tesseract.js);都在 `vendor/`,不靠外部 CDN |
 | `src/livescan.js` | 即時相機掃條碼 |
 | `src/enhance.js` | 文件影像增強(去陰影、去色塊底、拉對比) |
+| `src/modal.js` | 自製對話框(取代原生 confirm / alert) |
 | `tests/fixtures/` | 真實帳單的 OCR 輸出(已去除個資),當回歸測試 |
 | `src/db.js` | IndexedDB 存取、備份 |
 | `src/notify.js` | 提醒通知(頁面與 service worker 共用) |
