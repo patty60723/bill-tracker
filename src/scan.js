@@ -3,6 +3,8 @@
 
 const ZXING_FORMATS = ['Code39', 'Code128', 'Code93', 'ITF', 'QRCode', 'EAN-13'];
 const NATIVE_FORMATS = ['code_39', 'code_128', 'code_93', 'itf', 'qr_code', 'ean_13'];
+import { enhanceDocument } from './enhance.js';
+
 const vendorUrl = (path) => new URL(`../vendor/${path}`, import.meta.url).href;
 
 const scripts = new Map();
@@ -139,9 +141,26 @@ export async function readBarcodes(file, { isEnough = () => false } = {}) {
  * OCR。先用自動版面分析(PSM 3);如果 isEnough(text) 說資訊還不夠,再用「零散文字」模式
  * (PSM 11)跑一次——表格式帳單用 PSM 11 讀得比較好。回傳每一次的文字。
  */
+/** 文件增強後的 canvas(去陰影、去色塊底、拉對比),見 enhance.js。 */
+function enhancedCanvas(src) {
+  const ctx = src.getContext('2d', { willReadFrequently: true });
+  const enhanced = enhanceDocument(ctx.getImageData(0, 0, src.width, src.height));
+  const c = document.createElement('canvas');
+  c.width = src.width;
+  c.height = src.height;
+  c.getContext('2d').putImageData(new ImageData(enhanced.data, src.width, src.height), 0, 0);
+  return c;
+}
+
+/**
+ * OCR。依序試:增強後的影像(自動版面)→ 增強後(零散文字模式,表格比較好)→ 原始照片,
+ * 每次跑完問 isEnough(texts),夠了就停。回傳每一次的文字。
+ */
 export async function readText(file, { onProgress, isEnough = () => true } = {}) {
   await loadScript(vendorUrl('tesseract/tesseract.min.js'));
-  const passes = ['3', '11'];
+  const original = await toCanvas(file, 2200);
+  const enhanced = enhancedCanvas(original);
+  const passes = [[enhanced, '3'], [enhanced, '11'], [original, '3']];
   let pass = 0;
   const worker = await window.Tesseract.createWorker('chi_tra+eng', 1, {
     workerPath: vendorUrl('tesseract/worker.min.js'),
@@ -154,9 +173,9 @@ export async function readText(file, { onProgress, isEnough = () => true } = {})
   });
   const texts = [];
   try {
-    const canvas = await toCanvas(file, 2200);
     for (; pass < passes.length; pass++) {
-      await worker.setParameters({ tessedit_pageseg_mode: passes[pass] });
+      const [canvas, psm] = passes[pass];
+      await worker.setParameters({ tessedit_pageseg_mode: psm });
       const { data } = await worker.recognize(canvas);
       texts.push(data.text);
       if (isEnough(texts)) break;

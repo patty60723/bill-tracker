@@ -252,3 +252,25 @@ test('suggestTemplateDays:同月截止、隔月截止、沒填截止日', async 
     assert.equal(periodDates(d, p).due, due);
   }
 });
+
+test('文件增強:陰影、色塊底變白,文字保持深色', async () => {
+  const { enhanceDocument } = await import('../src/enhance.js');
+  const W = 400, H = 200;
+  const data = new Uint8ClampedArray(W * H * 4);
+  const set = (x, y, v) => { const p = (y * W + x) * 4; data[p] = data[p + 1] = data[p + 2] = v; data[p + 3] = 255; };
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      let paper = 235 - Math.round((x / W) * 130); // 由左到右越來越暗(陰影)
+      if (x >= 200 && x < 360 && y >= 60 && y < 140) paper -= 50; // 一塊色塊底
+      const isText = (y >= 90 && y < 110) && ((x >= 40 && x < 44) || (x >= 250 && x < 254)); // 兩條細筆畫
+      set(x, y, isText ? Math.round(paper * 0.35) : paper);
+    }
+  }
+  const out = enhanceDocument({ data, width: W, height: H });
+  const at = (x, y) => out.data[(y * W + x) * 4];
+  assert.ok(at(10, 10) > 230, `左邊亮紙 ${at(10, 10)}`);
+  assert.ok(at(390, 190) > 230, `右邊陰影裡的紙 ${at(390, 190)}`);
+  assert.ok(at(300, 75) > 230, `色塊底 ${at(300, 75)}`);
+  assert.ok(at(41, 100) < 60, `亮處的字 ${at(41, 100)}`);
+  assert.ok(at(251, 100) < 60, `色塊裡、陰影下的字 ${at(251, 100)}`);
+});
