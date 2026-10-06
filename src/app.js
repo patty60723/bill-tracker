@@ -417,12 +417,15 @@ async function renderBillForm(id, params) {
   await redrawFiles();
 
   async function addFiles(key, fileList) {
+    const ids = [];
     for (const f of fileList) {
       const fid = await db.saveFile(await compressImage(f), f.name);
       bill[key].push(fid);
       addedFiles.push(fid);
+      ids.push(fid);
     }
     await redrawFiles();
+    return ids;
   }
 
   form.addEventListener('change', async (e) => {
@@ -480,7 +483,41 @@ async function renderBillForm(id, params) {
   const status = $('#scan-status');
   const setStatus = (html) => { status.hidden = false; status.innerHTML = html; };
   // 拍照和即時掃描的結果累積在一起,兩種方式可以混用
-  const scan = { barcodes: new Set(), texts: [], errors: [] };
+  // 這個表單目前的掃描結果。同一張帳單的多次掃描(拍照 + 對準條碼掃、正反面)會合併;
+  // 掃「另一張」帳單前要先 resetScan(),不然上一張的條碼(例如稅單 QR Code)會一直蓋過新的。
+  const newScanState = () => ({
+    barcodes: new Set(), texts: [], errors: [], size: null,
+    photos: [], // 掃描時加進來的照片 id
+    before: {}, // 欄位被掃描改寫前的值
+    filled: {}, // 掃描寫進欄位的值
+  });
+  let scan = newScanState();
+  const hasScan = () => scan.barcodes.size > 0 || scan.texts.length > 0 || scan.photos.length > 0;
+  /** 掃描結果寫進欄位,並記下原值,換帳單時才還原得回去。 */
+  const fill = (name, value) => {
+    if (!(name in scan.before)) scan.before[name] = field(name).value;
+    field(name).value = value;
+    scan.filled[name] = field(name).value;
+  };
+  /** 清掉上一次掃描的影響:條碼/文字、它帶入的欄位(使用者之後自己改過的保留)、它加的照片。 */
+  async function resetScan() {
+    for (const [name, value] of Object.entries(scan.filled)) {
+      if (field(name).value === value) field(name).value = scan.before[name];
+    }
+    for (const fid of scan.photos) {
+      bill.billFiles = bill.billFiles.filter((x) => x !== fid);
+      await db.del('files', fid);
+    }
+    scan = newScanState();
+    status.hidden = true;
+    await redrawFiles();
+  }
+  /** 已經掃過一張時,問這次是「另一張帳單」還是「同一張的另一頁」。 */
+  async function startScan() {
+    if (!hasScan()) return;
+    const another = confirm('這個表單已經掃過一張了。\n\n按「確定」:這是另一張帳單 → 清掉上一張帶入的資料和照片,重新辨識\n按「取消」:同一張帳單的另一頁 → 合併兩次的結果');
+    if (another) await resetScan();
+  }
   const barcodesEnough = (t) => {
     const r = parseConvenienceBarcodes(t);
     return !!(r.dueDate && r.amount != null);
@@ -491,8 +528,9 @@ async function renderBillForm(id, params) {
     const file = e.target.files[0];
     e.target.value = '';
     if (!file) return;
+    await startScan();
     scan.size = await imageSize(file);
-    await addFiles('billFiles', [file]);
+    scan.photos.push(...await addFiles('billFiles', [file]));
     setStatus('🔍 辨識條碼中…');
     const { texts: codes, errors } = await readBarcodes(file, { isEnough: barcodesEnough });
     codes.forEach((c) => scan.barcodes.add(c));
@@ -503,13 +541,13 @@ async function renderBillForm(id, params) {
       setStatus('🔤 條碼資訊不完整,改用文字辨識…');
       try {
         const texts = await readText(file, {
-          isEnough: (t) => scanComplete(mergeScan([...scan.barcodes], t)),
+          isEnough: (t) => scanComplete(mergeScan([...scan.barcodes], [...scan.texts, ...t])),
           onProgress: (p) => setStatus(p.loading
             ? '🔤 載入文字辨識…(第一次需要下載約 12 MB,之後就不用)'
             : `🔤 文字辨識中…${p.pass > 1 ? '(換個方式再讀一次)' : ''} ${Math.round(p.progress * 100)}%`),
         });
-        scan.texts = texts;
-        result = mergeScan([...scan.barcodes], texts);
+        scan.texts.push(...texts);
+        result = mergeScan([...scan.barcodes], scan.texts);
       } catch (err) {
         console.warn(err);
         scan.errors.push(`文字辨識:${err?.message || err}`);
@@ -518,6 +556,7 @@ async function renderBillForm(id, params) {
     applyScan(result);
   };
   $('#live-btn').onclick = async () => {
+    await startScan();
     const codes = await liveScan({ describe: describeBarcodes, isEnough: barcodesEnough });
     if (!codes) return;
     codes.forEach((c) => scan.barcodes.add(c));
@@ -530,34 +569,34 @@ async function renderBillForm(id, params) {
     const missing = [];
     const via = (src) => ({ barcode: '條碼', ocr: '文字辨識', guess: '推測' }[src]);
     if (r.amount != null) {
-      field('amount').value = r.amount;
+      fill('amount', r.amount);
       found.push(`金額 ${money(r.amount)}(${via(r.source.amount)})`);
     } else missing.push('金額');
     if (r.dueDate) {
-      field('dueDate').value = r.dueDate;
+      fill('dueDate', r.dueDate);
       found.push(`截止日 ${formatDate(r.dueDate)}(${r.taxCutoff ? '稅單繳納期間最後一天' : via(r.source.dueDate)})`);
       if (r.taxCutoff) {
         // 條碼上的日期是「繳納期間屆滿後 3 日」,記在備註,不當截止日
         const note = `條碼上的繳納截止日是 ${formatDate(r.taxCutoff)}(繳納期間屆滿後 3 日)`;
         const notes = field('notes');
-        if (!notes.value.includes(note)) notes.value = notes.value ? `${notes.value}\n${note}` : note;
+        if (!notes.value.includes(note)) fill('notes', notes.value ? `${notes.value}\n${note}` : note);
       }
     } else missing.push('截止日');
-    if (r.period && /^\d{4}-\d{2}$/.test(r.period)) field('period').value = r.period;
-    if (r.cycleMonths) field('cycleMonths').value = r.cycleMonths;
+    if (r.period && /^\d{4}-\d{2}$/.test(r.period)) fill('period', r.period);
+    if (r.cycleMonths) fill('cycleMonths', r.cycleMonths);
     let movedPeriod = false;
     // 帳單沒寫月份、截止日又離目前選的月份很遠(例如掃去年的稅單):帳單月份改成截止日那個月
     if (!r.period && r.dueDate && field('period').value) {
       const [py, pm] = field('period').value.split('-').map(Number);
       const [dy, dm] = r.dueDate.split('-').map(Number);
       if (Math.abs((dy * 12 + dm) - (py * 12 + pm)) > 1) {
-        field('period').value = r.dueDate.slice(0, 7);
+        fill('period', r.dueDate.slice(0, 7));
         movedPeriod = true;
       }
     }
     if (r.accountNo && !field('accountNo').value) {
-      field('accountNo').value = r.accountNo;
-      if (r.bankCode) field('bankCode').value = r.bankCode;
+      fill('accountNo', r.accountNo);
+      if (r.bankCode) fill('bankCode', r.bankCode);
       found.push(r.taxQr ? `繳款類別 ${r.bankCode}、銷帳編號 ${r.accountNo}` : `繳費帳號 ${accountText(r)}`);
     }
 
