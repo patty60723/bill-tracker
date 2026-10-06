@@ -292,13 +292,14 @@ async function renderBillForm(id, params) {
           <button type="button" class="scan-tile" id="scan-btn">
             <span class="tile-icon">📷</span><b>拍照辨識</b><span>拍整張繳費單</span>
           </button>
+          <label class="scan-tile">
+            <span class="tile-icon">🖼️</span><b>從相簿選</b><span>選拍好的照片</span>
+            <input type="file" id="pick-input" accept="image/*" hidden>
+          </label>
           <button type="button" class="scan-tile" id="live-btn">
             <span class="tile-icon">▦</span><b>對準條碼掃</b><span>鏡頭靠近條碼</span>
           </button>
         </div>
-        <label class="pick-link">🖼️ 從相簿選照片<span class="muted small">(用手機相機 App 拍好再選,畫質最好)</span>
-          <input type="file" id="pick-input" accept="image/*" hidden>
-        </label>
         <input type="file" id="scan-input" accept="image/*" capture="environment" hidden>
         <div id="scan-status" class="scan-status" hidden></div>
       </div>
@@ -608,7 +609,7 @@ async function renderBillForm(id, params) {
     if (missing.length) lines.push(`⚠️ 沒辨識出${missing.join('、')},請手動填寫。`);
     const LOW_RES = 2000; // 長邊少於這個,條碼和小字很容易讀不到
     if (scan.size && Math.max(scan.size.width, scan.size.height) < LOW_RES) {
-      lines.push(`⚠️ 這張照片只有 ${scan.size.width}×${scan.size.height},解析度偏低,條碼和小字容易讀不到。可以改用「🖼️ 從相簿選照片」:先用手機相機 App 拍,再從相簿選。`);
+      lines.push(`⚠️ 這張照片只有 ${scan.size.width}×${scan.size.height},解析度偏低,條碼和小字容易讀不到。可以改用「🖼️ 從相簿選」:先用手機相機 App 拍,再從相簿選。`);
     }
     if (r.source.dueDate !== 'barcode' && !barcodesEnough(barcodes)) {
       lines.push('💡 截止日、金額最準的來源是帳單下方的超商條碼。條碼沒讀到的話,按「▦ 對準條碼掃」把鏡頭靠近條碼試試。');
