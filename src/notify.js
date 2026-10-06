@@ -6,6 +6,9 @@ import { diffDays, formatDate, todayISO } from './dates.js';
 import { buildReminders } from './schedule.js';
 
 export const SYNC_TAG = 'bill-reminders';
+// Android 通知不支援 SVG 圖示;badge 是狀態列上的小白圖示
+const ICON = 'icon-192.png';
+const BADGE = 'badge-96.png';
 const QUIET_BEFORE = 8; // 早上 8 點前、晚上 10 點後不在背景跳通知
 const QUIET_AFTER = 22;
 
@@ -28,6 +31,7 @@ export async function urgentReminders(today = todayISO()) {
 
 /**
  * 一天最多通知一次;但同一天如果冒出新的待辦(例如剛好到單日),會再通知一次。
+ * force:不管今天通知過沒有都再發一次。
  * @param registration ServiceWorkerRegistration(用它的 showNotification,背景也能跳)
  * @returns 有沒有真的跳通知
  */
@@ -43,21 +47,30 @@ export async function notifyReminders(registration, { force = false, background 
   const seen = last.date === today ? new Set(last.keys) : new Set();
   if (!force && keys.every((k) => seen.has(k))) return false;
 
-  if (!urgent.length) {
-    if (!force) return false;
-    await registration.showNotification('繳費小幫手', { body: '目前沒有要處理的帳單 🎉', tag: 'bill-reminder', icon: 'icon.svg' });
-    return true;
-  }
+  if (!urgent.length) return false;
   const lines = urgent.slice(0, 5).map((r) => `${r.name}:${REMINDER_TEXT[r.kind](r)}`);
   if (urgent.length > 5) lines.push(`…還有 ${urgent.length - 5} 筆`);
   await registration.showNotification(`有 ${urgent.length} 筆帳單要處理`, {
     body: lines.join('\n'),
     tag: 'bill-reminder',
     renotify: true,
-    icon: 'icon.svg',
-    badge: 'icon.svg',
+    icon: ICON,
+    badge: BADGE,
     data: { url: './' },
   });
   await db.setMeta('lastNotified', { date: today, keys: [...new Set([...seen, ...keys])] });
   return true;
+}
+
+export const TEST_TAG = 'bill-test';
+
+/** 設定頁的「測試通知」:一定會發一則,內容附上目前的待辦摘要。 */
+export async function sendTestNotification(registration) {
+  const urgent = await urgentReminders();
+  const body = urgent.length
+    ? `通知功能正常。目前有 ${urgent.length} 筆要處理:\n${urgent.slice(0, 3).map((r) => `${r.name}:${REMINDER_TEXT[r.kind](r)}`).join('\n')}`
+    : '通知功能正常,目前沒有要處理的帳單 🎉';
+  await registration.showNotification('🔔 繳費小幫手 測試通知', {
+    body, tag: TEST_TAG, renotify: true, icon: ICON, badge: BADGE, data: { url: './' },
+  });
 }

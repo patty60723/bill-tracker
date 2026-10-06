@@ -182,6 +182,7 @@ h3 { margin: 0 0 4px; font-size: 1rem; }
 .scan-tile b { font-size: 1rem; }
 .scan-tile span:last-child { font-size: .8rem; color: var(--muted); }
 .scan-tile:active { background: color-mix(in srgb, var(--primary) 15%, var(--surface)); }
+.notif-result { padding: 10px 12px; border-radius: 10px; background: var(--info-bg); border: 1px solid var(--line); line-height: 1.6; }
 .pick-link { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; color: var(--primary); font-size: .92rem; cursor: pointer; padding: 2px; }
 
 /* 即時掃條碼 */

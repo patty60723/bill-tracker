@@ -10,7 +10,9 @@ import {
 } from './schedule.js';
 import { buildICS } from './ics.js';
 import { compressImage, imageSize, readBarcodes, readText } from './scan.js';
-import { notifyReminders, REMINDER_TEXT, SYNC_TAG } from './notify.js';
+import {
+  notifyReminders, REMINDER_TEXT, sendTestNotification, SYNC_TAG, TEST_TAG,
+} from './notify.js';
 
 // ---------- 小工具 ----------
 
@@ -810,14 +812,11 @@ async function renderSettings() {
     download('bill-reminders.ics', buildICS(templates, todayISO()), 'text/calendar');
   };
   $('#notif')?.addEventListener('click', async () => {
-    await enableNotifications();
-    render();
+    const ok = await enableNotifications();
+    await render();
+    if (ok) testNotification();
   });
-  $('#notif-test')?.addEventListener('click', async () => {
-    const reg = await navigator.serviceWorker?.getRegistration();
-    if (!reg) return toast('通知需要用 HTTPS 開啟 app 才能用');
-    await notifyReminders(reg, { force: true });
-  });
+  $('#notif-test')?.addEventListener('click', () => testNotification());
   $('#persist')?.addEventListener('click', async () => {
     const ok = await navigator.storage.persist();
     toast(ok ? '已保護資料' : '瀏覽器沒有同意,建議先「加入主畫面」後再試');
@@ -873,15 +872,56 @@ async function registerBackgroundSync(reg) {
   }
 }
 
+/** 要求通知權限;成功回傳 true。 */
 async function enableNotifications() {
-  if (!('Notification' in window)) return toast('這個瀏覽器不支援通知');
+  if (!('Notification' in window)) {
+    toast('這個瀏覽器不支援通知');
+    return false;
+  }
   const result = await Notification.requestPermission();
-  if (result !== 'granted') return toast('沒有開啟通知,之後可以在「設定」再開');
+  if (result !== 'granted') {
+    toast('沒有開啟通知,之後可以在「設定」再開');
+    return false;
+  }
   const reg = await navigator.serviceWorker?.getRegistration();
-  if (!reg) return;
-  await registerBackgroundSync(reg);
+  if (reg) await registerBackgroundSync(reg);
   toast('通知已開啟');
-  await notifyReminders(reg);
+  return true;
+}
+
+const ANDROID_NOTIFY_HELP = '請到手機「設定 → 應用程式 → <b>繳費小幫手</b>(找不到就選 <b>Chrome</b>)→ 通知」把通知打開,'
+  + '並確認沒有開「勿干擾」。改完回來再按一次測試。';
+
+/**
+ * 設定頁的「測試通知」:按下去當下就檢查權限(必要時直接跳出詢問),送出測試通知,
+ * 再確認系統有沒有真的顯示,結果寫在按鈕下方,不會再「按了沒反應」。
+ */
+async function testNotification() {
+  const box = $('#notif-result');
+  const say = (html) => {
+    if (!box) return toast(html.replace(/<[^>]+>/g, ''));
+    box.hidden = false;
+    box.innerHTML = html;
+  };
+  if (!('Notification' in window) || !('serviceWorker' in navigator)) return say('⚠️ 這個瀏覽器不支援通知。');
+  say('⏳ 送出測試通知中…');
+  let perm = Notification.permission;
+  if (perm !== 'granted') perm = await Notification.requestPermission();
+  if (perm !== 'granted') {
+    return say(`⚠️ 通知權限沒有開啟(目前狀態:${perm === 'denied' ? '已封鎖' : '還沒允許'})。<br>${ANDROID_NOTIFY_HELP}`);
+  }
+  const reg = await navigator.serviceWorker.getRegistration();
+  if (!reg) return say('⚠️ app 還沒準備好(需要用 HTTPS 網址開啟),請重新整理後再試。');
+  try {
+    await sendTestNotification(reg);
+  } catch (e) {
+    return say(`⚠️ 通知送不出去:${esc(e.message || e)}<br>${ANDROID_NOTIFY_HELP}`);
+  }
+  await new Promise((r) => setTimeout(r, 1000));
+  const shown = (await reg.getNotifications({ tag: TEST_TAG }).catch(() => [])).length > 0;
+  say(shown
+    ? `✅ 已送出測試通知,請看一下手機的通知列。<br><span class="muted small">如果沒看到:${ANDROID_NOTIFY_HELP}</span>`
+    : `⚠️ 測試通知送出了,但系統沒有顯示,可能被手機擋下。<br>${ANDROID_NOTIFY_HELP}`);
 }
 
 async function notifyStatusHTML() {
@@ -894,7 +934,8 @@ async function notifyStatusHTML() {
   }
   if (perm === 'default') {
     return `<p class="muted small">開啟後:有快截止、逾期、該去拿繳費單的帳單時,手機會跳通知。</p>
-      <button class="btn primary" id="notif">開啟通知</button>`;
+      <button class="btn primary" id="notif">開啟通知</button>
+      <div id="notif-result" class="notif-result small" hidden></div>`;
   }
   const reg = await navigator.serviceWorker.getRegistration();
   const bg = reg ? await registerBackgroundSync(reg) : 'unsupported';
@@ -904,7 +945,8 @@ async function notifyStatusHTML() {
     unsupported: '⚠️ 這個瀏覽器只能在<b>打開 app 時</b>通知(背景提醒目前只有 Android 的 Chrome 支援)。要準時提醒,請用下面的「加到手機行事曆」。',
   }[bg];
   return `<p class="small">${bgText}</p>
-    <button class="btn" id="notif-test">現在測試一次通知</button>`;
+    <button class="btn" id="notif-test">現在測試一次通知</button>
+    <div id="notif-result" class="notif-result small" hidden></div>`;
 }
 
 /** 清掉沒有任何帳單引用的檔案(例如新增帳單到一半直接關掉 app)。 */
