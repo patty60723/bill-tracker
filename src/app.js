@@ -94,6 +94,31 @@ function go(hash) {
   else location.hash = hash;
 }
 
+// ---------- 離開前確認 ----------
+// 表單頁設定 leaveGuard;有沒存的變更時,任何離開方式(‹ 返回、下方分頁、手機返回鍵)都先確認。
+let leaveGuard = null; // { isDirty: () => boolean, onLeave?: () => void }
+let currentHash = location.hash;
+
+/** 可以離開目前頁面嗎?有沒存的變更就問;確定離開會執行 onLeave(例如清掉沒存的照片)。 */
+function confirmLeave() {
+  if (!leaveGuard?.isDirty()) return true;
+  if (!confirm('還沒儲存的內容會不見(包含掃描帶入的資料和照片)。\n\n確定要離開嗎?')) return false;
+  leaveGuard.onLeave?.();
+  leaveGuard = null;
+  return true;
+}
+
+/** 表單頁用:回傳 markDirty;儲存/刪除成功後呼叫 release() 再跳頁,就不會再問。 */
+function guardForm({ onLeave } = {}) {
+  let dirty = false;
+  leaveGuard = { isDirty: () => dirty, onLeave };
+  return {
+    markDirty: () => { dirty = true; },
+    isDirty: () => dirty,
+    release: () => { leaveGuard = null; },
+  };
+}
+
 function parseHash() {
   const [path, query = ''] = location.hash.replace(/^#/, '').split('?');
   return { parts: path.split('/').filter(Boolean), params: new URLSearchParams(query) };
@@ -372,6 +397,12 @@ async function renderBillForm(id, params) {
 
   const form = $('#bill-form');
   const field = (n) => form.elements.namedItem(n);
+  const guard = guardForm({
+    // 確定離開:這次加進來、但沒存的照片一起刪掉
+    onLeave: () => addedFiles.forEach((fid) => db.del('files', fid)),
+  });
+  form.addEventListener('input', guard.markDirty);
+  form.addEventListener('change', guard.markDirty);
 
   // 「同時存成固定繳費」:用目前表單內容組出一個 template
   const draftTemplate = () => ({
@@ -470,6 +501,7 @@ async function renderBillForm(id, params) {
     if (rm) {
       const [key, fid] = rm.dataset.remove.split(':');
       bill[key] = bill[key].filter((x) => x !== fid);
+      guard.markDirty();
       await redrawFiles();
       return;
     }
@@ -565,6 +597,7 @@ async function renderBillForm(id, params) {
   };
 
   function applyScan(r) {
+    guard.markDirty();
     const barcodes = [...scan.barcodes];
     const found = [];
     const missing = [];
@@ -659,16 +692,16 @@ async function renderBillForm(id, params) {
       savedTemplate = true;
     }
     await db.put('bills', updated);
+    guard.release();
     toast(savedTemplate ? '已儲存,也加進固定繳費了' : '已儲存');
     go(`#/bills?month=${updated.period}`);
   };
-  $('#cancel')?.addEventListener('click', async () => {
-    for (const fid of addedFiles) await db.del('files', fid);
-    go('#/');
-  });
+  $('#cancel')?.addEventListener('click', () => go('#/')); // 有沒存的變更時,會被離開前確認攔下來問
   $('#delete')?.addEventListener('click', async () => {
     if (!confirm(`確定刪除「${bill.name}」這筆帳單和它的照片?`)) return;
     await db.deleteBill(await db.get('bills', bill.id));
+    for (const fid of addedFiles) await db.del('files', fid);
+    guard.release();
     toast('已刪除');
     go(`#/bills?month=${bill.period}`);
   });
@@ -780,6 +813,9 @@ async function renderTemplateForm(id) {
     ${isNew ? '' : await templateHistory(t)}`;
 
   const form = $('#t-form');
+  const guard = guardForm();
+  form.addEventListener('input', guard.markDirty);
+  form.addEventListener('change', guard.markDirty);
   const read = () => ({
     ...t,
     name: form.elements.namedItem('name').value.trim(),
@@ -810,12 +846,14 @@ async function renderTemplateForm(id) {
   form.onsubmit = async (e) => {
     e.preventDefault();
     await db.put('templates', { ...read(), createdAt: t.createdAt || new Date().toISOString() });
+    guard.release();
     toast('已儲存');
     go('#/templates');
   };
   $('#delete')?.addEventListener('click', async () => {
     if (!confirm(`刪除「${t.name}」?(已登記的帳單紀錄會保留)`)) return;
     await db.del('templates', t.id);
+    guard.release();
     go('#/templates');
   });
 }
@@ -1007,6 +1045,8 @@ async function collectGarbage() {
 }
 
 async function render() {
+  leaveGuard = null; // 每一頁自己決定要不要設
+  currentHash = location.hash;
   objectUrls.forEach(URL.revokeObjectURL);
   objectUrls = [];
   const { parts, params } = parseHash();
@@ -1045,7 +1085,21 @@ view.addEventListener('click', async (e) => {
   }
 });
 $('#viewer').addEventListener('click', (e) => e.currentTarget.close());
-window.addEventListener('hashchange', render);
+window.addEventListener('hashchange', () => {
+  if (!confirmLeave()) {
+    // 留在原頁:把網址改回來(不觸發 hashchange,畫面和資料都不動)
+    history.replaceState(null, '', currentHash || '#/');
+    return;
+  }
+  render();
+});
+// 重新整理 / 關掉分頁:瀏覽器只允許顯示它自己的確認視窗
+window.addEventListener('beforeunload', (e) => {
+  if (leaveGuard?.isDirty()) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
 
 render();
 collectGarbage();
