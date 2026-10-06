@@ -134,6 +134,16 @@ test('稅單 QR Code:繳款類別、銷帳編號、金額、繳納截止日', ()
   assert.equal(r.dueDate, '2025-12-04');
 });
 
+test('稅單:截止日用繳納期間最後一天,條碼上的日期(屆滿後 3 日)另外記下', () => {
+  const r = mergeScan([TAX_QR], [], TODAY);
+  assert.equal(r.dueDate, '2025-12-01');
+  assert.equal(r.taxCutoff, '2025-12-04');
+  // 一般帳單不受影響
+  const normal = mergeScan(['151031K6A', '1510AB000001234'], [], TODAY);
+  assert.equal(normal.dueDate, '2026-10-31');
+  assert.equal(normal.taxCutoff, undefined);
+});
+
 test('稅單 OCR:沒有 QR Code 時從「銷帳編號」「繳款類別」「繳納截止日」表格讀', async () => {
   const fs = await import('node:fs');
   const text = fs.readFileSync(new URL('./fixtures/land-tax-pass1.txt', import.meta.url), 'utf8');
@@ -141,6 +151,10 @@ test('稅單 OCR:沒有 QR Code 時從「銷帳編號」「繳款類別」「繳
   assert.equal(r.accountNo, '1234567890123456');
   assert.equal(r.bankCode, '11331');
   assert.equal(r.dueDate, '2025-12-04'); // 表頭 OCR 成「級納截止日」,值是 6 碼的 141204
+  // 稅單上註明「繳納截止日為繳納期間屆滿後 3 日」:截止日用 11/30,條碼的 12/4 另外記下
+  const fromText = mergeScan([], [text], TODAY);
+  assert.equal(fromText.dueDate, '2025-12-01');
+  assert.equal(fromText.taxCutoff, '2025-12-04');
   // 掃到 QR Code 時,以 QR Code 為準(OCR 可能看錯一個數字)
   const merged = mergeScan([TAX_QR.replace('1234567890123456', '1234567890123457')], [text], TODAY);
   assert.equal(merged.accountNo, '1234567890123457');

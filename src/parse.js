@@ -8,7 +8,7 @@
 // 不是每張單都長這樣(郵局劃撥、銀行、電信各有變化),所以全部都是「猜」,
 // 結果只用來預填表單,使用者存檔前一定看得到、改得到。
 
-import { diffDays, normalizeYear, todayISO, validDate } from './dates.js';
+import { addDays, diffDays, normalizeYear, todayISO, validDate } from './dates.js';
 
 const BARCODE_WINDOW_DAYS = 400; // 條碼日期離今天超過這麼久就當成看錯
 const GUESS_PAST_DAYS = 60; // 沒有關鍵字時,只在這個範圍內猜截止日
@@ -324,7 +324,7 @@ export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO()) {
     }
   }
   const dueSource = fromBarcode.dueDate ? 'barcode' : fromText.dueDate ? (fromText.dueDateGuessed ? 'guess' : 'ocr') : null;
-  return {
+  const result = {
     ...fromText,
     ...fromBarcode,
     source: {
@@ -332,7 +332,19 @@ export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO()) {
       dueDate: dueSource,
     },
   };
+  // 稅單:條碼/表格上的「繳納截止日」是繳納期間屆滿後 3 日(稅單上有註明)。
+  // 截止日改用繳納期間最後一天,條碼上的日期另外記成 taxCutoff(畫面上寫進備註)。
+  const rawTexts = (Array.isArray(ocrTexts) ? ocrTexts : [ocrTexts]).filter(Boolean);
+  const isTax = fromBarcode.taxQr || rawTexts.some((t) => TAX_GRACE_RE.test(normalizeOcrText(t)));
+  if (isTax && result.dueDate && dueSource !== 'guess') {
+    result.taxCutoff = result.dueDate;
+    result.dueDate = addDays(result.dueDate, -TAX_GRACE_DAYS);
+  }
+  return result;
 }
+
+const TAX_GRACE_DAYS = 3;
+const TAX_GRACE_RE = /屆滿後\s*(?:3|三)\s*日/;
 
 /** 判斷還需不需要再跑一次 OCR(換版面模式)。 */
 export const scanComplete = (r) => r.amount != null && r.dueDate && r.source.dueDate !== 'guess';

@@ -535,7 +535,13 @@ async function renderBillForm(id, params) {
     } else missing.push('金額');
     if (r.dueDate) {
       field('dueDate').value = r.dueDate;
-      found.push(`截止日 ${formatDate(r.dueDate)}(${via(r.source.dueDate)})`);
+      found.push(`截止日 ${formatDate(r.dueDate)}(${r.taxCutoff ? '稅單繳納期間最後一天' : via(r.source.dueDate)})`);
+      if (r.taxCutoff) {
+        // 條碼上的日期是「繳納期間屆滿後 3 日」,記在備註,不當截止日
+        const note = `條碼上的繳納截止日是 ${formatDate(r.taxCutoff)}(繳納期間屆滿後 3 日)`;
+        const notes = field('notes');
+        if (!notes.value.includes(note)) notes.value = notes.value ? `${notes.value}\n${note}` : note;
+      }
     } else missing.push('截止日');
     if (r.period && /^\d{4}-\d{2}$/.test(r.period)) field('period').value = r.period;
     if (r.cycleMonths) field('cycleMonths').value = r.cycleMonths;
@@ -557,6 +563,7 @@ async function renderBillForm(id, params) {
 
     const lines = [];
     if (found.length) lines.push(`✅ 已帶入:${found.join('、')}`);
+    if (r.taxCutoff) lines.push(`🏛️ 稅單:條碼上的 ${formatDate(r.taxCutoff)} 是繳納期間屆滿後 3 日,截止日用 ${formatDate(r.dueDate)}(已寫進備註)。`);
     if (movedPeriod) lines.push(`📅 帳單月份已改成 <b>${formatPeriod(field('period').value)}</b>(跟截止日同月),存檔後會列在那個月份底下;不對的話請直接改。`);
     if (r.source.dueDate === 'guess') lines.push('⚠️ 帳單上沒找到「繳費期限」之類的字,截止日是用帳單上最晚的日期<b>推測</b>的,請一定要核對。');
     if (missing.length) lines.push(`⚠️ 沒辨識出${missing.join('、')},請手動填寫。`);
