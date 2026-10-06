@@ -127,6 +127,13 @@ h3 { margin: 0 0 4px; font-size: 1rem; }
 
 .month-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .chips { display: flex; gap: 8px; margin-bottom: 12px; }
+.segmented { display: grid; grid-template-columns: 1fr 1fr; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 4px; margin-bottom: 12px; }
+.segmented a { text-align: center; padding: 8px; border-radius: 9px; color: var(--muted); font-weight: 600; }
+.segmented a.on { background: var(--primary); color: var(--primary-text); }
+.group-head { margin: 18px 0 8px; font-size: 1rem; }
+.group-head a { color: var(--text); }
+.group-label { margin: 10px 2px 4px; }
+.history { margin-top: 8px; }
 .chip { padding: 4px 14px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
 .chip.on { background: var(--primary); border-color: var(--primary); color: var(--primary-text); }
 
@@ -164,7 +171,18 @@ h3 { margin: 0 0 4px; font-size: 1rem; }
 
 .scan-box { display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: var(--radius); background: var(--info-bg); border: 1px solid var(--line); }
 .scan-status { font-size: .92rem; overflow-wrap: anywhere; }
-.scan-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.scan-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+/* 兩種掃描方式是平行的選項:同樣外觀,不分主次 */
+.scan-tile {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 14px 8px; border-radius: 12px; cursor: pointer;
+  background: var(--surface); color: var(--text); border: 1.5px solid var(--primary); font: inherit;
+}
+.scan-tile .tile-icon { font-size: 1.6rem; line-height: 1.2; }
+.scan-tile b { font-size: 1rem; }
+.scan-tile span:last-child { font-size: .8rem; color: var(--muted); }
+.scan-tile:active { background: color-mix(in srgb, var(--primary) 15%, var(--surface)); }
+.pick-link { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; color: var(--primary); font-size: .92rem; cursor: pointer; padding: 2px; }
 
 /* 即時掃條碼 */
 dialog.live-scan { padding: 0; border: 0; width: 100vw; height: 100dvh; max-width: 100vw; max-height: 100dvh; background: #000; color: #fff; }
@@ -204,7 +222,7 @@ nav.tabs a.on span { filter: none; opacity: 1; }
 
 #toast {
   position: fixed; left: 50%; bottom: calc(84px + env(safe-area-inset-bottom)); transform: translate(-50%, 20px);
-  max-width: calc(100% - 32px); background: var(--text); color: var(--bg);
+  width: max-content; max-width: calc(100% - 32px); background: var(--text); color: var(--bg);
   padding: 10px 16px; border-radius: 10px; opacity: 0; pointer-events: none; transition: .2s; z-index: 10;
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }

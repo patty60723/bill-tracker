@@ -29,6 +29,18 @@ async function loadZXing() {
   return window.ZXingWASM;
 }
 
+/** 照片原始解析度(診斷用:拍出來的照片如果太小,條碼和小字就讀不到)。 */
+export async function imageSize(file) {
+  try {
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const size = { width: bitmap.width, height: bitmap.height };
+    bitmap.close?.();
+    return size;
+  } catch {
+    return null;
+  }
+}
+
 async function toCanvas(file, maxDim) {
   const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
   const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
@@ -41,7 +53,7 @@ async function toCanvas(file, maxDim) {
 }
 
 /** 照片縮小成 JPEG 再存,避免手機空間被原圖塞爆。PDF 等非圖片原樣保存。 */
-export async function compressImage(file, maxDim = 1800, quality = 0.82) {
+export async function compressImage(file, maxDim = 2560, quality = 0.9) {
   if (!file.type.startsWith('image/')) return file;
   try {
     const canvas = await toCanvas(file, maxDim);

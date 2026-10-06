@@ -9,7 +9,7 @@ import {
   suggestTemplateDays,
 } from './schedule.js';
 import { buildICS } from './ics.js';
-import { compressImage, readBarcodes, readText } from './scan.js';
+import { compressImage, imageSize, readBarcodes, readText } from './scan.js';
 import { notifyReminders, REMINDER_TEXT, SYNC_TAG } from './notify.js';
 
 // ---------- 小工具 ----------
@@ -166,31 +166,52 @@ function summaryBlock(s) {
 async function renderBills(params) {
   const { templates, bills } = await loadAll();
   const today = todayISO();
-  const month = params.get('month') || today.slice(0, 7);
+  const showAll = params.get('month') === 'all';
+  const month = showAll ? today.slice(0, 7) : params.get('month') || today.slice(0, 7);
   const filter = params.get('filter') || 'all';
   const { year, month: mo } = parsePeriod(month);
   const prev = addMonths(year, mo, -1);
   const next = addMonths(year, mo, 1);
   const tById = new Map(templates.map((t) => [t.id, t]));
   const link = (mk, f) => `#/bills?month=${mk}&filter=${f}`;
+  const byFilter = (b) => filter === 'all' || (filter === 'paid' ? b.status === 'paid' : b.status !== 'paid');
+  const byStatusThenDue = (a, b) => (a.status === 'paid') - (b.status === 'paid') || (a.dueDate || '').localeCompare(b.dueDate || '');
 
-  const list = bills
-    .filter((b) => b.period === month)
-    .filter((b) => filter === 'all' || (filter === 'paid' ? b.status === 'paid' : b.status !== 'paid'))
-    .sort((a, b) => (a.status === 'paid') - (b.status === 'paid') || (a.dueDate || '').localeCompare(b.dueDate || ''));
+  let body;
+  if (showAll) {
+    // 所有帳單,依帳單月份(新到舊)分組
+    const groups = new Map();
+    for (const b of bills.filter(byFilter).sort((x, y) => y.period.localeCompare(x.period) || byStatusThenDue(x, y))) {
+      if (!groups.has(b.period)) groups.set(b.period, []);
+      groups.get(b.period).push(b);
+    }
+    body = groups.size
+      ? [...groups].map(([p, list]) => `<h2 class="group-head"><a href="${link(p, filter)}">${formatPeriod(p)}</a></h2>
+          ${list.map((b) => billRow(b, tById.get(b.templateId), today)).join('')}`).join('')
+      : '<div class="empty">沒有符合的帳單</div>';
+  } else {
+    const list = bills.filter((b) => b.period === month).filter(byFilter).sort(byStatusThenDue);
+    const elsewhere = bills.filter((b) => b.period !== month).length;
+    body = `${summaryBlock(monthSummary(bills, month))}
+      ${list.length ? list.map((b) => billRow(b, tById.get(b.templateId), today)).join('')
+    : `<div class="empty">這個月沒有帳單${elsewhere ? `<br><a href="${link('all', filter)}">其他月份有 ${elsewhere} 筆,看全部 ›</a>` : ''}</div>`}`;
+  }
 
   view.innerHTML = `
     <header class="page-head"><h1>繳費紀錄</h1></header>
-    <div class="month-nav">
-      <a class="btn small" href="${link(periodKey(prev.year, prev.month), filter)}">‹</a>
+    <div class="segmented">
+      <a class="${showAll ? '' : 'on'}" href="${link(showAll ? today.slice(0, 7) : month, filter)}">依月份</a>
+      <a class="${showAll ? 'on' : ''}" href="${link('all', filter)}">所有帳單(${bills.length})</a>
+    </div>
+    ${showAll ? '' : `<div class="month-nav">
+      <a class="btn small" href="${link(periodKey(prev.year, prev.month), filter)}" aria-label="上個月">‹</a>
       <strong>${formatPeriod(month)}</strong>
-      <a class="btn small" href="${link(periodKey(next.year, next.month), filter)}">›</a>
-    </div>
-    ${summaryBlock(monthSummary(bills, month))}
+      <a class="btn small" href="${link(periodKey(next.year, next.month), filter)}" aria-label="下個月">›</a>
+    </div>`}
     <div class="chips">
-      ${[['all', '全部'], ['unpaid', '未繳'], ['paid', '已繳']].map(([k, label]) => `<a class="chip ${k === filter ? 'on' : ''}" href="${link(month, k)}">${label}</a>`).join('')}
+      ${[['all', '全部'], ['unpaid', '未繳'], ['paid', '已繳']].map(([k, label]) => `<a class="chip ${k === filter ? 'on' : ''}" href="${link(showAll ? 'all' : month, k)}">${label}</a>`).join('')}
     </div>
-    ${list.length ? list.map((b) => billRow(b, tById.get(b.templateId), today)).join('') : '<div class="empty">這個月沒有帳單</div>'}
+    ${body}
     <a class="fab" href="#/bill/new?period=${month}" aria-label="新增帳單">＋</a>`;
 }
 
@@ -265,13 +286,20 @@ async function renderBillForm(id, params) {
     </header>
     <form id="bill-form" class="form">
       <div class="scan-box">
-        <div class="scan-buttons">
-          <button type="button" class="btn primary" id="scan-btn">📷 拍照辨識</button>
-          <button type="button" class="btn" id="live-btn">▦ 對準條碼掃</button>
+        <div class="scan-tiles">
+          <button type="button" class="scan-tile" id="scan-btn">
+            <span class="tile-icon">📷</span><b>拍照辨識</b><span>拍整張繳費單</span>
+          </button>
+          <button type="button" class="scan-tile" id="live-btn">
+            <span class="tile-icon">▦</span><b>對準條碼掃</b><span>鏡頭靠近條碼</span>
+          </button>
         </div>
-        <span class="muted small">拍整張繳費單自動帶入金額、截止日;條碼讀不到時用「對準條碼掃」,鏡頭靠近條碼掃</span>
+        <label class="pick-link">🖼️ 從相簿選照片<span class="muted small">(用手機相機 App 拍好再選,畫質最好)</span>
+          <input type="file" id="pick-input" accept="image/*" hidden>
+        </label>
         <input type="file" id="scan-input" accept="image/*" capture="environment" hidden>
         <div id="scan-status" class="scan-status" hidden></div>
+      </div>
       </div>
 
       <label>固定繳費項目
@@ -456,10 +484,12 @@ async function renderBillForm(id, params) {
     return !!(r.dueDate && r.amount != null);
   };
   $('#scan-btn').onclick = () => $('#scan-input').click();
+  $('#pick-input').onchange = (e) => $('#scan-input').onchange(e);
   $('#scan-input').onchange = async (e) => {
     const file = e.target.files[0];
     e.target.value = '';
     if (!file) return;
+    scan.size = await imageSize(file);
     await addFiles('billFiles', [file]);
     setStatus('🔍 辨識條碼中…');
     const { texts: codes, errors } = await readBarcodes(file, { isEnough: barcodesEnough });
@@ -507,11 +537,15 @@ async function renderBillForm(id, params) {
     } else missing.push('截止日');
     if (r.period && /^\d{4}-\d{2}$/.test(r.period)) field('period').value = r.period;
     if (r.cycleMonths) field('cycleMonths').value = r.cycleMonths;
+    let movedPeriod = false;
     // 帳單沒寫月份、截止日又離目前選的月份很遠(例如掃去年的稅單):帳單月份改成截止日那個月
     if (!r.period && r.dueDate && field('period').value) {
       const [py, pm] = field('period').value.split('-').map(Number);
       const [dy, dm] = r.dueDate.split('-').map(Number);
-      if (Math.abs((dy * 12 + dm) - (py * 12 + pm)) > 1) field('period').value = r.dueDate.slice(0, 7);
+      if (Math.abs((dy * 12 + dm) - (py * 12 + pm)) > 1) {
+        field('period').value = r.dueDate.slice(0, 7);
+        movedPeriod = true;
+      }
     }
     if (r.accountNo && !field('accountNo').value) {
       field('accountNo').value = r.accountNo;
@@ -521,13 +555,19 @@ async function renderBillForm(id, params) {
 
     const lines = [];
     if (found.length) lines.push(`✅ 已帶入:${found.join('、')}`);
+    if (movedPeriod) lines.push(`📅 帳單月份已改成 <b>${formatPeriod(field('period').value)}</b>(跟截止日同月),存檔後會列在那個月份底下;不對的話請直接改。`);
     if (r.source.dueDate === 'guess') lines.push('⚠️ 帳單上沒找到「繳費期限」之類的字,截止日是用帳單上最晚的日期<b>推測</b>的,請一定要核對。');
     if (missing.length) lines.push(`⚠️ 沒辨識出${missing.join('、')},請手動填寫。`);
+    const LOW_RES = 2000; // 長邊少於這個,條碼和小字很容易讀不到
+    if (scan.size && Math.max(scan.size.width, scan.size.height) < LOW_RES) {
+      lines.push(`⚠️ 這張照片只有 ${scan.size.width}×${scan.size.height},解析度偏低,條碼和小字容易讀不到。可以改用「🖼️ 從相簿選照片」:先用手機相機 App 拍,再從相簿選。`);
+    }
     if (r.source.dueDate !== 'barcode' && !barcodesEnough(barcodes)) {
       lines.push('💡 截止日、金額最準的來源是帳單下方的超商條碼。條碼沒讀到的話,按「▦ 對準條碼掃」把鏡頭靠近條碼試試。');
     }
     lines.push('<span class="muted small">照片已存下。辨識偶爾會看錯,存檔前請核對。</span>');
     const detail = [
+      ...(scan.size ? [`照片解析度:${scan.size.width}×${scan.size.height}(約 ${Math.round(scan.size.width * scan.size.height / 1e4)} 萬畫素)`] : []),
       `條碼(${barcodes.length}):${barcodes.length ? barcodes.map(esc).join(' / ') : '沒讀到'}`,
       ...scan.texts.map((t, i) => `文字辨識 #${i + 1}:\n${esc(t.trim()) || '(空白)'}`),
       ...(scan.errors.length ? [`錯誤:\n${[...new Set(scan.errors)].map(esc).join('\n')}`] : []),
@@ -631,6 +671,18 @@ async function renderTemplates() {
     <a class="fab" href="#/template/new" aria-label="新增固定繳費">＋</a>`;
 }
 
+/** 固定繳費頁下方:這個項目所有月份的帳單。 */
+async function templateHistory(t) {
+  const today = todayISO();
+  const list = (await db.getAll('bills')).filter((b) => b.templateId === t.id)
+    .sort((a, b) => b.period.localeCompare(a.period));
+  return `<section class="history">
+    <h2>繳費紀錄(${list.length})</h2>
+    ${list.length ? list.map((b) => `<div class="muted small group-label">${formatPeriod(b.period)}</div>${billRow(b, t, today)}`).join('')
+    : '<div class="empty">還沒有帳單</div>'}
+  </section>`;
+}
+
 async function renderTemplateForm(id) {
   const isNew = id === 'new';
   const t = isNew
@@ -675,7 +727,8 @@ async function renderTemplateForm(id) {
         <button class="btn primary big" type="submit">儲存</button>
         ${isNew ? '' : '<button class="btn big danger" type="button" id="delete">刪除</button>'}
       </div>
-    </form>`;
+    </form>
+    ${isNew ? '' : await templateHistory(t)}`;
 
   const form = $('#t-form');
   const read = () => ({
