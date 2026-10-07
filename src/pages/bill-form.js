@@ -302,9 +302,10 @@ export async function renderBillForm(id, params) {
     if (!file) return;
     if (!(await startScan())) return;
     scan.size = await imageSize(file);
+    scan.timings = [];
     scan.photos.push(...await addFiles('billFiles', [file]));
     setStatus('🔍 辨識條碼中…');
-    const { texts: codes, errors } = await readBarcodes(file, { isEnough: barcodesEnough });
+    const { texts: codes, errors } = await readBarcodes(file, { isEnough: barcodesEnough, timings: scan.timings });
     codes.forEach((c) => scan.barcodes.add(c));
     scan.errors.push(...errors);
     let result = mergeScan([...scan.barcodes], scan.texts);
@@ -313,6 +314,7 @@ export async function renderBillForm(id, params) {
       setStatus('🔤 條碼資訊不完整,改用文字辨識…');
       try {
         const texts = await readText(file, {
+          timings: scan.timings,
           isEnough: (t) => scanComplete(mergeScan([...scan.barcodes], [...scan.texts, ...t])),
           onProgress: (p) => setStatus(p.loading
             ? '🔤 載入文字辨識…(第一次需要下載約 12 MB,之後就不用)'
@@ -388,6 +390,8 @@ export async function renderBillForm(id, params) {
     }
     lines.push('<span class="muted small">照片已存下。辨識偶爾會看錯,存檔前請核對。</span>');
     const detail = [
+      ...(scan.timings?.length ? [`耗時:${scan.timings.map((x) => `${x.label} ${(x.ms / 1000).toFixed(1)}s`).join(' · ')}`
+        + `(共 ${(scan.timings.reduce((a, x) => a + x.ms, 0) / 1000).toFixed(1)}s)`] : []),
       ...(scan.size ? [`照片解析度:${scan.size.width}×${scan.size.height}(約 ${Math.round(scan.size.width * scan.size.height / 1e4)} 萬畫素)`] : []),
       `條碼(${barcodes.length}):${barcodes.length ? barcodes.map(esc).join(' / ') : '沒讀到'}`,
       ...scan.texts.map((t, i) => `文字辨識 #${i + 1}:\n${esc(t.trim()) || '(空白)'}`),

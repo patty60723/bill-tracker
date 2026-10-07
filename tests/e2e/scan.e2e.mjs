@@ -62,6 +62,9 @@ test('OCR:表格式帳單(增強影像 + 版面模式)', async () => {
   assert.match(status, /文字辨識/);
   assert.equal(await value(page, 'amount'), '1286');
   assert.equal(await value(page, 'dueDate'), '2026-10-27');
+  // 辨識細節列出每個步驟的耗時(用來量手機上的速度)
+  const detail = await page.textContent('.scan-detail pre');
+  assert.match(detail, /耗時:條碼.*影像增強 [\d.]+s.*文字辨識 #1\(增強・自動版面\) [\d.]+s.*\(共 [\d.]+s\)/);
   assert.deepEqual(errors, []);
   await context.close();
 });

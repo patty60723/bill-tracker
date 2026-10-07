@@ -119,7 +119,8 @@ function cropCanvas(src, x, y, w, h) {
  * 重疊的橫條各掃一次(條碼常在帳單下方,切小一點比較容易對準)。
  * @returns {{ texts: string[], errors: string[] }}
  */
-export async function readBarcodes(file, { isEnough = () => false } = {}) {
+export async function readBarcodes(file, { isEnough = () => false, timings } = {}) {
+  const t0 = performance.now();
   const errors = [];
   const found = new Set();
   let canvas;
@@ -132,9 +133,12 @@ export async function readBarcodes(file, { isEnough = () => false } = {}) {
   add(await detectCanvas(canvas, { errors }));
   const { width: W, height: H } = canvas;
   const size = Math.round(H / 3);
+  let strips = 0;
   for (let y = H - size; y >= 0 && !isEnough([...found]); y -= Math.round(size / 2)) {
     add(await detectCanvas(cropCanvas(canvas, 0, y, W, size), { errors }));
+    strips++;
   }
+  timings?.push({ label: strips ? `條碼(整張 + ${strips} 條)` : '條碼', ms: performance.now() - t0 });
   return { texts: [...found], errors: [...new Set(errors)] };
 }
 
@@ -152,12 +156,21 @@ function enhancedCanvas(src) {
 /**
  * OCR。依序試:增強後的影像(自動版面)→ 增強後(零散文字模式,表格比較好)→ 原始照片,
  * 每次跑完問 isEnough(texts),夠了就停。回傳每一次的文字。
+ * timings(陣列,可省略):記錄每個步驟花了多久,顯示在「辨識細節」。
  */
-export async function readText(file, { onProgress, isEnough = () => true } = {}) {
+export async function readText(file, { onProgress, isEnough = () => true, timings } = {}) {
+  let t = performance.now();
+  const lap = (label) => {
+    const now = performance.now();
+    timings?.push({ label, ms: now - t });
+    t = now;
+  };
   await loadScript(vendorUrl('tesseract/tesseract.min.js'));
   const original = await toCanvas(file, 2200);
+  lap('準備照片');
   const enhanced = enhancedCanvas(original);
-  const passes = [[enhanced, '3'], [enhanced, '11'], [original, '3']];
+  lap('影像增強');
+  const passes = [[enhanced, '3', '增強・自動版面'], [enhanced, '11', '增強・零散文字'], [original, '3', '原圖']];
   let pass = 0;
   const worker = await window.Tesseract.createWorker('chi_tra+eng', 1, {
     workerPath: vendorUrl('tesseract/worker.min.js'),
@@ -168,13 +181,15 @@ export async function readText(file, { onProgress, isEnough = () => true } = {})
       else if (/loading|initializ/.test(m.status)) onProgress?.({ loading: true });
     },
   });
+  lap('載入文字辨識');
   const texts = [];
   try {
     for (; pass < passes.length; pass++) {
-      const [canvas, psm] = passes[pass];
+      const [canvas, psm, label] = passes[pass];
       await worker.setParameters({ tessedit_pageseg_mode: psm });
       const { data } = await worker.recognize(canvas);
       texts.push(data.text);
+      lap(`文字辨識 #${pass + 1}(${label})`);
       if (isEnough(texts)) break;
     }
   } finally {
