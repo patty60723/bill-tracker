@@ -249,6 +249,7 @@ export async function renderBillForm(id, params) {
   // 掃「另一張」帳單前要先 resetScan(),不然上一張的條碼(例如稅單 QR Code)會一直蓋過新的。
   const newScanState = () => ({
     barcodes: new Set(), texts: [], errors: [], size: null,
+    engines: '', sources: {}, // 診斷用:各條碼引擎的次數/耗時、每個條碼是誰讀到的
     photos: [], // 掃描時加進來的照片 id
     before: {}, // 欄位被掃描改寫前的值
     filled: {}, // 掃描寫進欄位的值
@@ -322,8 +323,10 @@ export async function renderBillForm(id, params) {
     scan.timings = [];
     scan.photos.push(...await addFiles('billFiles', [file]));
     setStatus('🔍 辨識條碼中…');
-    const { texts: codes, errors } = await readBarcodes(file, { isEnough: barcodesEnough, timings: scan.timings });
+    const { texts: codes, errors, engines, sources } = await readBarcodes(file, { isEnough: barcodesEnough, timings: scan.timings });
     codes.forEach((c) => scan.barcodes.add(c));
+    scan.engines = engines;
+    Object.assign(scan.sources, sources);
     scan.errors.push(...errors);
     let result = mergeScan([...scan.barcodes], scan.texts);
     // 條碼已經有金額和截止日、只缺帳號時,也跑一次文字辨識,看帳單上有沒有寫轉帳帳號
@@ -411,7 +414,8 @@ export async function renderBillForm(id, params) {
       ...(scan.timings?.length ? [`耗時:${scan.timings.map((x) => `${x.label} ${(x.ms / 1000).toFixed(1)}s`).join(' · ')}`
         + `(共 ${(scan.timings.reduce((a, x) => a + x.ms, 0) / 1000).toFixed(1)}s)`] : []),
       ...(scan.size ? [`照片解析度:${scan.size.width}×${scan.size.height}(約 ${Math.round(scan.size.width * scan.size.height / 1e4)} 萬畫素)`] : []),
-      `條碼(${barcodes.length}):${barcodes.length ? barcodes.join(' / ') : '沒讀到'}`,
+      `條碼(${barcodes.length}):${barcodes.length ? barcodes.map((b) => (scan.sources[b] ? `${b}〔${scan.sources[b]}〕` : b)).join(' / ') : '沒讀到'}`,
+      ...(scan.engines ? [`條碼引擎:${scan.engines}`] : []),
       `條碼解讀:${barcodeSummary(parseConvenienceBarcodes(barcodes))}`,
       ...scan.texts.map((t, i) => `文字辨識 #${i + 1}:\n${t.trim() || '(空白)'}`),
       ...(scan.errors.length ? [`錯誤:\n${[...new Set(scan.errors)].join('\n')}`] : []),

@@ -37,7 +37,10 @@ test('超商三段式條碼:截止日與金額從條碼帶入', async () => {
   assert.equal(await value(page, 'amount'), '1234');
   assert.equal(await value(page, 'dueDate'), '2026-10-31');
   assert.equal(await page.$$eval('#bill-files .file', (e) => e.length), 1);
-  assert.match(await page.textContent('.scan-detail pre'), /條碼解讀:第一段\(截止日\)✓ 10\/31 · 第三段\(金額\)✓ \$1,234/);
+  const detail = await page.textContent('.scan-detail pre');
+  assert.match(detail, /條碼解讀:第一段\(截止日\)✓ 10\/31 · 第三段\(金額\)✓ \$1,234/);
+  assert.match(detail, /151031K6A〔zxing〕/); // 每個條碼標出是哪個引擎讀到的
+  assert.match(detail, /條碼引擎:內建:這個瀏覽器沒有 · zxing \d+ 次 [\d.]+s 讀到 \d+ 個/);
   assert.deepEqual(errors, []);
   await context.close();
 });

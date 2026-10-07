@@ -86,32 +86,45 @@ function nativeDetector() {
  * box 是條碼在這張 canvas 上的範圍 { x, y, w, h }(拿來決定要放大重掃哪一塊)。
  * 錯誤不丟出去,收集在 errors 裡(顯示在「辨識細節」)。
  */
-async function detectBoxes(canvas, errors) {
+async function detectBoxes(canvas, errors, stats = newStats()) {
   const found = [];
+  let t = performance.now();
   try {
     const native = await nativeDetector();
     if (native) {
+      stats.native.runs++;
       for (const r of await native.detect(canvas)) {
         const b = r.boundingBox;
-        found.push({ text: r.rawValue, box: b && { x: b.x, y: b.y, w: b.width, h: b.height } });
+        stats.native.read++;
+        found.push({ text: r.rawValue, engine: 'native', box: b && { x: b.x, y: b.y, w: b.width, h: b.height } });
       }
+      stats.native.ms += performance.now() - t;
     }
   } catch (e) {
     errors.push(`內建條碼偵測:${e.message || e}`);
   }
+  t = performance.now();
   try {
     const zx = await loadZXing();
     const imageData = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height);
+    stats.zxing.runs++;
     const results = await zx.readBarcodes(imageData, {
       formats: ZXING_FORMATS, tryHarder: true, tryRotate: true, maxNumberOfSymbols: 12,
     });
+    stats.zxing.ms += performance.now() - t;
     for (const r of results) {
-      if (!r.isValid || !r.text) continue;
+      if (!r.isValid || !r.text) {
+        stats.zxing.invalid++;
+        if (r.error) errors.push(`zxing 讀到但無效:${r.error}`);
+        continue;
+      }
+      stats.zxing.read++;
       const pts = r.position ? [r.position.topLeft, r.position.topRight, r.position.bottomLeft, r.position.bottomRight] : [];
       const xs = pts.map((p) => p.x);
       const ys = pts.map((p) => p.y);
       found.push({
         text: r.text,
+        engine: 'zxing',
         box: pts.length ? { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) } : null,
       });
     }
@@ -120,6 +133,9 @@ async function detectBoxes(canvas, errors) {
   }
   return found;
 }
+
+const newStats = () => ({ native: { runs: 0, read: 0, ms: 0 }, zxing: { runs: 0, read: 0, invalid: 0, ms: 0 } });
+const ENGINE_NAME = { native: '內建', zxing: 'zxing' };
 
 /** 在一張 canvas 上找條碼,只回傳內容(即時掃描用)。 */
 export async function detectCanvas(canvas, { errors = [] } = {}) {
@@ -166,7 +182,8 @@ function columnRegion(boxes, W, H) {
  * 2. 讀到三段式條碼的其中一段、但 isEnough(texts) 還不滿足 → 那一欄放大 2 倍重掃;
  * 3. 還不夠 → 把照片切成重疊的橫條各掃一次(條碼常在帳單下方,切小一點比較容易對準),
  *    橫條裡讀到新的一段,一樣放大那一欄重掃。
- * @returns {{ texts: string[], errors: string[] }}
+ * @returns {{ texts: string[], errors: string[], engines: string, sources: Object<string, string> }}
+ *   engines / sources 是診斷用:各引擎掃了幾次、花多久;每個條碼是哪個引擎讀到的。
  */
 export async function readBarcodes(file, { isEnough = () => false, timings } = {}) {
   const t0 = performance.now();
@@ -181,12 +198,15 @@ export async function readBarcodes(file, { isEnough = () => false, timings } = {
   const { width: W, height: H } = canvas;
   const steps = [];
   const zoomed = [];
+  const stats = newStats();
+  const sources = {};
   const enough = () => isEnough([...found]);
   /** 掃 canvas(在原圖的 (ox, oy)、縮放 scale),回傳讀到的三段式條碼位置(原圖座標)。 */
   const scan = async (c, ox = 0, oy = 0, scale = 1) => {
     const boxes = [];
-    for (const r of await detectBoxes(c, errors)) {
+    for (const r of await detectBoxes(c, errors, stats)) {
       found.add(r.text);
+      (sources[r.text] ??= new Set()).add(ENGINE_NAME[r.engine]);
       if (r.box && TW_SEGMENT.test(r.text.trim().toUpperCase())) {
         boxes.push({ x: ox + r.box.x / scale, y: oy + r.box.y / scale, w: r.box.w / scale, h: r.box.h / scale });
       }
@@ -214,7 +234,17 @@ export async function readBarcodes(file, { isEnough = () => false, timings } = {
   }
   if (strips) steps.push(`${strips} 條`);
   timings?.push({ label: steps.length ? `條碼(整張 + ${steps.join(' + ')})` : '條碼', ms: performance.now() - t0 });
-  return { texts: [...found], errors: [...new Set(errors)] };
+  const sec = (ms) => `${(ms / 1000).toFixed(1)}s`;
+  const engines = [
+    stats.native.runs ? `內建 ${stats.native.runs} 次 ${sec(stats.native.ms)} 讀到 ${stats.native.read} 個` : '內建:這個瀏覽器沒有',
+    `zxing ${stats.zxing.runs} 次 ${sec(stats.zxing.ms)} 讀到 ${stats.zxing.read} 個${stats.zxing.invalid ? `(另有 ${stats.zxing.invalid} 個無效)` : ''}`,
+  ].join(' · ');
+  return {
+    texts: [...found],
+    errors: [...new Set(errors)],
+    engines,
+    sources: Object.fromEntries(Object.entries(sources).map(([k, v]) => [k, [...v].join('+')])),
+  };
 }
 
 /** 文件增強後的 canvas(去陰影、去色塊底、拉對比),見 enhance.js。 */
