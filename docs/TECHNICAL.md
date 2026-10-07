@@ -232,13 +232,25 @@ scan = { barcodes: Set, texts: [], errors: [], size,
    縮到 2400 px(線寬 ~1.2 px)就讀不到。
 2. `detectCanvas()`:先用瀏覽器內建 `BarcodeDetector`(Android Chrome 有,底層是 ML Kit),
    再用 zxing-wasm(`tryHarder`、`tryRotate`、最多 12 個符號),結果聯集。錯誤收集起來顯示在「辨識細節」。
-3. `isEnough()`(由呼叫端提供:讀到截止日 + 金額)不滿足時,把照片切成高度 H/3、
-   重疊 1/2 的橫條,**從下往上**逐條掃(條碼通常在帳單下方)。
-4. zxing 在 `vendor/zxing-reader.js`(IIFE build),wasm 路徑用 `setZXingModuleOverrides({ locateFile })`
+3. **放大條碼欄**:讀到三段式條碼的其中一段(9 / 15 / 16 碼)但 `isEnough()`(由呼叫端提供:
+   讀到截止日 + 金額)還不滿足時,用讀到的條碼位置(BarcodeDetector 的 `boundingBox`、zxing 的
+   `position`)推算那一欄:左右各加條碼寬 20%、上下各加條碼寬 80%(三段是上下疊在一起的),
+   切出來放大 2 倍(長邊上限 4096)重掃。同一塊只放大一次。
+4. 還不夠時,把照片切成高度 H/3、重疊 1/2 的橫條,**從下往上**逐條掃(條碼通常在帳單下方),
+   橫條也放大 2 倍;橫條裡讀到新的一段,一樣放大那一欄。
+5. zxing 在 `vendor/zxing-reader.js`(IIFE build),wasm 路徑用 `setZXingModuleOverrides({ locateFile })`
    指向 `vendor/zxing_reader.wasm`。
 
 實驗結論(合成 3024×4032 照片、模糊 1 px、旋轉 2°):窄線 ≥ 3 px 都讀得到;≤ 2 px 時不論放大、
 裁切、換 binarizer(LocalAverage / GlobalHistogram)都救不回來 → 因此提供「對準條碼掃」。
+真實帳單照片(2268×4032,社區管理費)另外測過:照片縮到 80%、65% 時整張掃讀不齊/讀不到,
+加上放大條碼欄、放大橫條後三段都讀得到;縮到 50% 只剩第一段,40% 讀不到。
+
+**條碼下方數字**:條碼都沒讀到時,`mergeScan` 會在 OCR 文字裡找單獨成一行、符合第一段
+(`\d{6}[0-9A-Z]{3}`)或第三段(`\d{4}[0-9A-Z]{2}\d{9}`)格式的字串(印在條碼下方的人眼可讀字),
+用同一套 `parseConvenienceBarcodes` 解析,來源標成 `printed`。截止日在文字辨識沒有找到
+(或只是推測)時採用;金額因為 15 碼數字也可能是別的號碼,只有跟文字辨識的金額一致、
+或前 4 碼是近期年月時才採用。
 
 ### 即時掃描(`src/livescan.js`)
 

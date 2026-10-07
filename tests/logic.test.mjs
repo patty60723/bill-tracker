@@ -430,3 +430,17 @@ test('service worker 的離線快取清單包含所有 src/ 下的 JS 檔', asyn
   const missing = walk('src').filter((f) => !listed.has(f));
   assert.deepEqual(missing, [], `sw.js 的 ASSETS 少了:${missing.join(', ')}`);
 });
+
+test('條碼沒讀到時,用 OCR 讀到的條碼下方數字補截止日、確認金額', () => {
+  const text = '繳款截止日\n115/10/31\n總 計\n$ 4504\n喇 lmmWmmWWWWM\n1510316DA\n咖 UWHWWWMM\n092057000004504';
+  const r = mergeScan([], [text], '2026-10-07');
+  assert.equal(r.dueDate, '2026-10-31');
+  assert.equal(r.source.dueDate, 'printed');
+  assert.equal(r.amount, 4504);
+  assert.equal(r.source.amount, 'printed');
+  // 條碼有讀到就用條碼;15 碼數字跟金額對不上、前 4 碼又不是年月時不採用
+  const r2 = mergeScan(['1510316DA'], ['總計 $ 3,304\n092057000004504'], '2026-10-07');
+  assert.equal(r2.source.dueDate, 'barcode');
+  assert.equal(r2.amount, 3304);
+  assert.equal(r2.source.amount, 'ocr');
+});

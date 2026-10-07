@@ -82,14 +82,20 @@ function nativeDetector() {
 }
 
 /**
- * 在一張 canvas 上找條碼:先用內建偵測,再用 zxing。
+ * 在一張 canvas 上找條碼:先用內建偵測,再用 zxing。回傳 [{ text, box }],
+ * box 是條碼在這張 canvas 上的範圍 { x, y, w, h }(拿來決定要放大重掃哪一塊)。
  * 錯誤不丟出去,收集在 errors 裡(顯示在「辨識細節」)。
  */
-export async function detectCanvas(canvas, { errors = [] } = {}) {
-  const texts = new Set();
+async function detectBoxes(canvas, errors) {
+  const found = [];
   try {
     const native = await nativeDetector();
-    if (native) for (const r of await native.detect(canvas)) texts.add(r.rawValue);
+    if (native) {
+      for (const r of await native.detect(canvas)) {
+        const b = r.boundingBox;
+        found.push({ text: r.rawValue, box: b && { x: b.x, y: b.y, w: b.width, h: b.height } });
+      }
+    }
   } catch (e) {
     errors.push(`內建條碼偵測:${e.message || e}`);
   }
@@ -99,24 +105,67 @@ export async function detectCanvas(canvas, { errors = [] } = {}) {
     const results = await zx.readBarcodes(imageData, {
       formats: ZXING_FORMATS, tryHarder: true, tryRotate: true, maxNumberOfSymbols: 12,
     });
-    for (const r of results) if (r.isValid && r.text) texts.add(r.text);
+    for (const r of results) {
+      if (!r.isValid || !r.text) continue;
+      const pts = r.position ? [r.position.topLeft, r.position.topRight, r.position.bottomLeft, r.position.bottomRight] : [];
+      const xs = pts.map((p) => p.x);
+      const ys = pts.map((p) => p.y);
+      found.push({
+        text: r.text,
+        box: pts.length ? { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) } : null,
+      });
+    }
   } catch (e) {
     errors.push(`zxing:${e.message || e}`);
   }
-  return [...texts];
+  return found;
 }
 
-function cropCanvas(src, x, y, w, h) {
+/** 在一張 canvas 上找條碼,只回傳內容(即時掃描用)。 */
+export async function detectCanvas(canvas, { errors = [] } = {}) {
+  return [...new Set((await detectBoxes(canvas, errors)).map((r) => r.text))];
+}
+
+/** 從 src 切一塊 (x, y, w, h),放大 scale 倍。 */
+function cropCanvas(src, x, y, w, h, scale = 1) {
   const c = document.createElement('canvas');
-  c.width = w;
-  c.height = h;
-  c.getContext('2d').drawImage(src, x, y, w, h, 0, 0, w, h);
+  c.width = Math.round(w * scale);
+  c.height = Math.round(h * scale);
+  const g = c.getContext('2d');
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(src, x, y, w, h, 0, 0, c.width, c.height);
   return c;
 }
 
+// 超商三段式條碼的樣子:第一段 9 碼、第二段 16 碼、第三段 15 碼
+const TW_SEGMENT = /^\*?[0-9A-Z]{9}\*?$|^\*?[0-9A-Z]{15,16}\*?$/;
+const UPSCALE = 2;
+const MAX_CROP_DIM = 4096;
+
 /**
- * 讀照片裡的條碼:整張(原解析度)掃一次,isEnough(texts) 還不滿足再把照片切成
- * 重疊的橫條各掃一次(條碼常在帳單下方,切小一點比較容易對準)。
+ * 三段式條碼是上下疊在同一欄。讀到其中一段時,把那一欄(左右、上下各留一些)切出來放大重掃:
+ * 細條碼在手機照片上常常糊成一片,放大後 zxing 比較讀得到。實測同一張帳單,
+ * 照片縮小到 40% 整張讀不到任何條碼,這一欄放大 2 倍還是讀得到第一、三段。
+ */
+function columnRegion(boxes, W, H) {
+  const x0 = Math.min(...boxes.map((b) => b.x));
+  const x1 = Math.max(...boxes.map((b) => b.x + b.w));
+  const y0 = Math.min(...boxes.map((b) => b.y));
+  const y1 = Math.max(...boxes.map((b) => b.y + b.h));
+  const bw = x1 - x0;
+  const x = Math.max(0, x0 - bw * 0.2);
+  const y = Math.max(0, y0 - bw * 0.8);
+  const w = Math.min(W, x1 + bw * 0.2) - x;
+  const h = Math.min(H, y1 + bw * 0.8) - y;
+  return w > 0 && h > 0 ? { x, y, w, h } : null;
+}
+
+/**
+ * 讀照片裡的條碼:
+ * 1. 整張(原解析度)掃一次;
+ * 2. 讀到三段式條碼的其中一段、但 isEnough(texts) 還不滿足 → 那一欄放大 2 倍重掃;
+ * 3. 還不夠 → 把照片切成重疊的橫條各掃一次(條碼常在帳單下方,切小一點比較容易對準),
+ *    橫條裡讀到新的一段,一樣放大那一欄重掃。
  * @returns {{ texts: string[], errors: string[] }}
  */
 export async function readBarcodes(file, { isEnough = () => false, timings } = {}) {
@@ -129,16 +178,42 @@ export async function readBarcodes(file, { isEnough = () => false, timings } = {
   } catch (e) {
     return { texts: [], errors: [`讀不到照片:${e.message || e}`] };
   }
-  const add = (list) => list.forEach((t) => found.add(t));
-  add(await detectCanvas(canvas, { errors }));
   const { width: W, height: H } = canvas;
+  const steps = [];
+  const zoomed = [];
+  const enough = () => isEnough([...found]);
+  /** 掃 canvas(在原圖的 (ox, oy)、縮放 scale),回傳讀到的三段式條碼位置(原圖座標)。 */
+  const scan = async (c, ox = 0, oy = 0, scale = 1) => {
+    const boxes = [];
+    for (const r of await detectBoxes(c, errors)) {
+      found.add(r.text);
+      if (r.box && TW_SEGMENT.test(r.text.trim().toUpperCase())) {
+        boxes.push({ x: ox + r.box.x / scale, y: oy + r.box.y / scale, w: r.box.w / scale, h: r.box.h / scale });
+      }
+    }
+    return boxes;
+  };
+  const zoomColumn = async (boxes) => {
+    const region = boxes.length && !enough() && columnRegion(boxes, W, H);
+    // 同一塊已經放大掃過就不再掃
+    if (!region || zoomed.some((z) => Math.abs(z.x - region.x) < region.w * 0.2 && Math.abs(z.y - region.y) < region.h * 0.2)) return;
+    zoomed.push(region);
+    const scale = Math.min(UPSCALE, MAX_CROP_DIM / Math.max(region.w, region.h));
+    await scan(cropCanvas(canvas, region.x, region.y, region.w, region.h, scale), region.x, region.y, scale);
+    steps.push('放大條碼區');
+  };
+
+  await zoomColumn(await scan(canvas));
   const size = Math.round(H / 3);
   let strips = 0;
-  for (let y = H - size; y >= 0 && !isEnough([...found]); y -= Math.round(size / 2)) {
-    add(await detectCanvas(cropCanvas(canvas, 0, y, W, size), { errors }));
+  for (let y = H - size; y >= 0 && !enough(); y -= Math.round(size / 2)) {
+    const scale = Math.min(UPSCALE, MAX_CROP_DIM / W);
+    const boxes = await scan(cropCanvas(canvas, 0, y, W, size, scale), 0, y, scale);
     strips++;
+    await zoomColumn(boxes);
   }
-  timings?.push({ label: strips ? `條碼(整張 + ${strips} 條)` : '條碼', ms: performance.now() - t0 });
+  if (strips) steps.push(`${strips} 條`);
+  timings?.push({ label: steps.length ? `條碼(整張 + ${steps.join(' + ')})` : '條碼', ms: performance.now() - t0 });
   return { texts: [...found], errors: [...new Set(errors)] };
 }
 

@@ -323,14 +323,27 @@ export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO()) {
       fromText.dueDateGuessed = !!r.dueDateGuessed;
     }
   }
-  const dueSource = fromBarcode.dueDate ? 'barcode' : fromText.dueDate ? (fromText.dueDateGuessed ? 'guess' : 'ocr') : null;
+  let dueSource = fromBarcode.dueDate ? 'barcode' : fromText.dueDate ? (fromText.dueDateGuessed ? 'guess' : 'ocr') : null;
+  let amountSource = fromBarcode.amount != null ? 'barcode' : fromText.amount != null ? 'ocr' : null;
+  // 條碼本身沒讀到時,看 OCR 有沒有讀到印在條碼下方的那串字(第一段、第三段)
+  const printed = printedBarcodes((Array.isArray(ocrTexts) ? ocrTexts : [ocrTexts]).filter(Boolean), today);
+  if (!fromBarcode.dueDate && printed.dueDate) {
+    if (!fromText.dueDate || fromText.dueDateGuessed || fromText.dueDate === printed.dueDate) {
+      Object.assign(fromText, { dueDate: printed.dueDate, dueDateGuessed: false });
+      dueSource = 'printed';
+    }
+  }
+  if (fromBarcode.amount == null && printed.amount != null) {
+    // 15 碼的數字也可能是別的號碼:跟文字辨識的金額一致,或前 4 碼是近期的年月才採用
+    if (fromText.amount === printed.amount || (fromText.amount == null && printed.period)) {
+      fromText.amount = printed.amount;
+      amountSource = 'printed';
+    }
+  }
   const result = {
     ...fromText,
     ...fromBarcode,
-    source: {
-      amount: fromBarcode.amount != null ? 'barcode' : fromText.amount != null ? 'ocr' : null,
-      dueDate: dueSource,
-    },
+    source: { amount: amountSource, dueDate: dueSource },
   };
   // 稅單:條碼/表格上的「繳納截止日」是繳納期間屆滿後 3 日(稅單上有註明)。
   // 截止日改用繳納期間最後一天,條碼上的日期另外記成 taxCutoff(畫面上寫進備註)。
@@ -341,6 +354,15 @@ export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO()) {
     result.dueDate = addDays(result.dueDate, -TAX_GRACE_DAYS);
   }
   return result;
+}
+
+/** OCR 文字裡單獨成一行、長得像三段式條碼第一段或第三段的字串(印在條碼下方的人眼可讀字)。 */
+function printedBarcodes(texts, today) {
+  const tokens = texts.flatMap((t) => t.split('\n'))
+    .map((line) => line.replace(/\s+/g, '').toUpperCase())
+    .filter((t) => /^\d{6}[0-9A-Z]{3}$|^\d{4}[0-9A-Z]{2}\d{9}$/.test(t));
+  const r = parseConvenienceBarcodes(tokens, today);
+  return { dueDate: r.dueDate, amount: r.amount, period: r.period };
 }
 
 const TAX_GRACE_DAYS = 3;

@@ -360,7 +360,7 @@ export async function renderBillForm(id, params) {
     const barcodes = [...scan.barcodes];
     const found = [];
     const missing = [];
-    const via = (src) => ({ barcode: '條碼', ocr: '文字辨識', guess: '推測' }[src]);
+    const via = (src) => ({ barcode: '條碼', printed: '條碼下方數字', ocr: '文字辨識', guess: '推測' }[src]);
     if (r.amount != null) {
       fill('amount', r.amount);
       found.push(`金額 ${money(r.amount)}(${via(r.source.amount)})`);
