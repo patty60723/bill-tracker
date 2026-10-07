@@ -323,3 +323,4 @@ dialog.modal[open] { animation: modal-in .16s ease-out; }
 .backup-actions { margin-top: 8px; }
 .backup-status { margin: 0; font-weight: 600; }
 .backup-status.due { color: var(--warn); }
+.version { text-align: center; margin: 4px 0 12px; }

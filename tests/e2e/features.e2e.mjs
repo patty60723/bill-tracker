@@ -213,6 +213,12 @@ test('通知:測試通知會真的顯示並回報;行事曆匯出', async () => 
   });
   await page.goto(`${server.url}#/settings`);
   await page.waitForSelector('#notif-test');
+  assert.match(await page.textContent('.version'), /繳費小幫手 v\d+/);
+  // service worker 接手後重新整理(導覽請求經過 sw 的 fetch)還是正常
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  await page.reload();
+  await page.waitForSelector('#notif-test');
+  assert.ok(await page.evaluate(() => !!navigator.serviceWorker.controller));
   await page.click('#notif-test');
   await page.waitForFunction(() => /✅/.test(document.querySelector('#notif-result')?.textContent || ''));
   const shown = await page.evaluate(async () => (await (await navigator.serviceWorker.ready).getNotifications()).map((n) => n.title));

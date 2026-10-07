@@ -7,7 +7,14 @@ export async function setupServiceWorker() {
   if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
   try {
     // sw.js 用 import 共用提醒邏輯,所以要用 module 註冊
-    await navigator.serviceWorker.register('sw.js', { type: 'module' });
+    // updateViaCache: 'none':檢查 sw.js 和它 import 的檔案有沒有更新時不用 HTTP 快取
+    await navigator.serviceWorker.register('sw.js', { type: 'module', updateViaCache: 'none' });
+    // 開著 app 時新版 service worker 接手:畫面上跑的還是舊程式,提示重新整理
+    if (navigator.serviceWorker.controller) {
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        toast('已下載新版本', { label: '重新整理', onClick: () => location.reload() });
+      }, { once: true });
+    }
   } catch (e) {
     console.warn('SW 註冊失敗', e);
     return;

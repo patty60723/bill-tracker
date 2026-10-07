@@ -1,11 +1,13 @@
 // Service worker(以 module 形式註冊):
-// 1. 離線可用:app 檔案先走網路、失敗才用快取(這樣更新後馬上是新版)。
+// 1. 離線可用:app 檔案先走網路(每次都跟伺服器確認)、失敗才用快取(這樣更新後馬上是新版)。
+//    版本號在 src/version.js,前端有改就要加 1。
 //    OCR 的大檔(vendor/tesseract/)不預先下載,第一次用到時由 fetch 順便快取。
 // 2. 背景提醒:Android Chrome 把 app 加到主畫面後,瀏覽器會定期(大約一天一次以上,時間由瀏覽器決定)
 //    用 periodicsync 叫醒這裡,有快截止、逾期、該拿繳費單的帳單就跳通知。
 import { notifyReminders, SYNC_TAG } from './src/notify.js';
+import { VERSION } from './src/version.js';
 
-const CACHE = 'bill-tracker-v29';
+const CACHE = `bill-tracker-${VERSION}`;
 const ASSETS = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png',
   'icon-maskable-512.png', 'badge-96.png',
@@ -13,7 +15,7 @@ const ASSETS = [
   'src/livescan.js', 'src/modal.js', 'src/notify.js', 'src/pages/bill-form.js', 'src/pages/bills.js',
   'src/pages/home.js', 'src/pages/settings.js', 'src/pages/templates.js', 'src/parse.js', 'src/scan.js',
   'src/schedule.js', 'src/stats.js', 'src/ui/actions.js', 'src/ui/components.js', 'src/ui/dom.js',
-  'src/ui/notifications.js', 'src/ui/router.js',
+  'src/ui/notifications.js', 'src/ui/router.js', 'src/version.js',
   'vendor/zxing-reader.js', 'vendor/zxing_reader.wasm',
 ];
 
@@ -35,7 +37,12 @@ self.addEventListener('fetch', (e) => {
   e.respondWith((async () => {
     const cache = await caches.open(CACHE);
     try {
-      const res = await fetch(e.request);
+      // 一律跟伺服器確認是不是最新的(沒變只回 304,很省):GitHub Pages 讓瀏覽器快取 10 分鐘,
+      // 不加的話更新後可能還拿到舊檔,甚至新舊檔混用。vendor/ 的大檔不會變,照一般快取。
+      const fresh = url.pathname.includes('/vendor/') ? {} : { cache: 'no-cache' };
+      const res = e.request.mode === 'navigate'
+        ? await fetch(e.request.url, { ...fresh, credentials: 'same-origin' })
+        : await fetch(e.request, fresh);
       if (res.ok) cache.put(e.request, res.clone());
       return res;
     } catch (err) {

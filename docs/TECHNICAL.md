@@ -595,8 +595,16 @@ for 每個 active && autoPay 的 template:
 - `activate`:刪掉其他版本的 cache,`clients.claim()`。
 - `fetch`(同源 GET):**network-first**,成功就更新快取,失敗才用快取 → 有網路時永遠是新版,
   離線時可用。`vendor/tesseract/`(約 12 MB)不預先下載,第一次 OCR 時經由這裡順便快取。
-- **改任何前端檔案都要把 `CACHE` 版本號加一**:有網路時 network-first 本來就會拿到新檔,但離線快取
-  只有在瀏覽器偵測到 `sw.js` 內容改變、重新 install 時才會整批換新。
+  - app 檔案用 `cache: 'no-cache'` 抓(每次跟伺服器確認,沒變只回 304)。GitHub Pages 回
+    `Cache-Control: max-age=600`,沒加的話推上去後 10 分鐘內手機可能拿到舊檔,甚至新舊模組混用
+    (真實案例:測新功能時其實還在跑舊版)。`vendor/` 不會變,照一般 HTTP 快取。
+  - 導覽請求(`mode: 'navigate'`)不能帶 init 重建 Request,改用 `fetch(url, init)`。
+- 註冊時 `updateViaCache: 'none'`:檢查 `sw.js` 與它 import 的模組有沒有更新時不經 HTTP 快取。
+- 開著 app 時新版接手(`controllerchange`)→ toast「已下載新版本 · 重新整理」;畫面上跑的仍是舊程式,
+  不自動重新整理,免得打斷正在填的表單。
+- **改任何前端檔案都要把 `src/version.js` 的 `VERSION` 加一**:快取名稱是 `bill-tracker-${VERSION}`,
+  瀏覽器偵測到 `sw.js` 或它 import 的檔案改變時重新 install,整批換新離線快取。
+  設定頁最下面顯示版本號,測試前可以先確認手機上是不是新版。
 - `notificationclick`:聚焦已開啟的視窗,沒有就開新視窗。
 
 ---
@@ -685,4 +693,4 @@ node 端用 `tesseract.js` + `sharp`,對同一組合成困難帳單比較原圖 
 | tesseract.js-core | 5.1.1 | Apache-2.0 | `vendor/tesseract/tesseract-core{,-simd}-lstm.wasm.js` | 複製 LSTM 兩個版本 |
 | 辨識資料 | 4.0.0_best_int | Apache-2.0 | `vendor/tesseract/{chi_tra,eng}.traineddata.gz` | `@tesseract.js-data/<lang>` |
 
-更新後記得把 `sw.js` 的 `CACHE` 版本號加一,並重跑 `npm test` 與掃描相關的端對端驗證。
+更新後記得把 `src/version.js` 的 `VERSION` 加一,並重跑 `npm test` 與掃描相關的端對端驗證。

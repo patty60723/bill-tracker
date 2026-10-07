@@ -10,6 +10,7 @@ import { backupNow, getBackupStatus, loadAll } from '../ui/actions.js';
 import { catLabel } from '../ui/components.js';
 import { $, download, esc, toast, view } from '../ui/dom.js';
 import { enableNotifications, notifyStatusHTML, testNotification } from '../ui/notifications.js';
+import { VERSION } from '../version.js';
 import { go, render } from '../ui/router.js';
 
 export async function renderSettings() {
@@ -44,7 +45,8 @@ export async function renderSettings() {
         <button class="btn" id="export-csv">匯出帳單 CSV</button>
         ${persisted ? '<span class="badge ok">資料已受保護</span>' : '<button class="btn" id="persist">保護資料</button>'}
       </div>
-    </section>`;
+    </section>
+    <p class="muted small version">繳費小幫手 ${VERSION}</p>`;
 
   $('#ics').onclick = async () => {
     const { templates } = await loadAll();
