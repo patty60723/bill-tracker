@@ -444,3 +444,22 @@ test('條碼沒讀到時,用 OCR 讀到的條碼下方數字補截止日、確�
   assert.equal(r2.amount, 3304);
   assert.equal(r2.source.amount, 'ocr');
 });
+
+test('台電:千分位看錯、第三段有「-」、條碼日期是代收截止日', () => {
+  // 一次把 2,219 看成「2,.219」(會變成 219),另一次在好幾個地方讀到 2,219 → 採用 2219
+  const pass1 = '應繳總金額 2,.219 元';
+  const pass2 = '應繳總金額\n2,219 元\n應繳總金額 ****2,219 元\n繳費期限\n115年10月01日';
+  assert.equal(mergeScan([], [pass1, pass2], '2026-09-20').amount, 2219);
+  assert.equal(parseBillText('應繳總金額 「2.219', '2026-09-20').amount, 2219);
+  assert.equal(parseBillText('流動電費 1296.7 元\n應繳總金額 1296.7 元', '2026-09-20').amount, 1296);
+  // 第三段 00000-000002219
+  assert.equal(parseConvenienceBarcodes(['151106111', '00000-000002219'], '2026-09-20').amount, 2219);
+  // 條碼日期 11/06 是代收截止日,截止日用帳單上的繳費期限 10/01
+  const text = '繳費期限 115/10/01\n應繳總金額 2,219 元\n代收截止日 115/11/06';
+  const r = mergeScan(['151106111', '00000-000002219'], [text], '2026-09-20');
+  assert.equal(r.dueDate, '2026-10-01');
+  assert.equal(r.collectCutoff, '2026-11-06');
+  assert.equal(r.amount, 2219);
+  // 沒寫「代收截止」的帳單照舊用條碼日期
+  assert.equal(mergeScan(['151106111', '00000-000002219'], ['繳費期限 115/10/01'], '2026-09-20').dueDate, '2026-11-06');
+});

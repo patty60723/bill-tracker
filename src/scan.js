@@ -154,7 +154,7 @@ function cropCanvas(src, x, y, w, h, scale = 1) {
 }
 
 // 可以當「條碼區在這裡」線索的條碼:長度像三段式條碼的一段(讀錯幾碼也算,位置還是對的)
-const SEGMENT_HINT = /^\*?[0-9A-Z]{8,20}\*?$/;
+const SEGMENT_HINT = /^\*?[0-9A-Z-]{8,20}\*?$/;
 const UPSCALE = 2;
 const MAX_CROP_DIM = 4096;
 const MAX_ZOOMS = 5; // 最多放大幾欄(一個線索最多 3 欄:靠左、置中、靠右)

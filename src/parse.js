@@ -62,7 +62,7 @@ export function parseConvenienceBarcodes(texts, today = todayISO()) {
         result.dueDate = due;
         result.collectionCode = t.slice(6);
       }
-    } else if (/^\d{4}[0-9A-Z]{2}\d{9}$/.test(t)) {
+    } else if (/^\d{4}[0-9A-Z-]{2}\d{9}$/.test(t)) { // 台電印成 00000-000002219
       const amount = +t.slice(6);
       if (amount > 0 && result.amount == null) {
         result.amount = amount;
@@ -183,9 +183,15 @@ function regionsAfter(lines, keyword, skip) {
   return regions;
 }
 
+// 截止日關鍵字後面又出現另一個截止日關鍵字(例如台電「繳費期限 10/01 … 代收截止日 11/06」),
+// 後面那段屬於另一個欄位,不算進來
+const ANY_DUE_RE = new RegExp(DUE_KEYWORDS.map(escapeRe).join('|'));
+
 function findDueDate(lines, today) {
   for (const { re } of DUE_MATCHERS) {
-    for (const region of regionsAfter(lines, re)) {
+    for (const full of regionsAfter(lines, re)) {
+      const cut = full.search(ANY_DUE_RE);
+      const region = cut > 0 ? full.slice(0, cut) : full;
       // 截止日通常是附近日期裡最晚的那個(計費期間、出帳日都比較早)
       let dates = allDates(region).filter((d) => near(d.date, today, BARCODE_WINDOW_DAYS));
       if (!dates.length) dates = looseDates(region, today).filter((d) => near(d.date, today, BARCODE_WINDOW_DAYS));
@@ -198,6 +204,8 @@ function findDueDate(lines, today) {
 function findAmountIn(region) {
   let text = region;
   for (const d of allDates(region)) text = text.replace(region.substr(d.index, d.length), ' ');
+  // OCR 常把千分位看錯:「2,.219」「2.219」→ 2,219(小數點後剛好 3 位,帳單金額不會這樣寫)
+  text = text.replace(/(?<![\d.,])(\d{1,3})(?:\s?[,.]){1,2}\s?(?=\d{3}(?![\d.]))/g, '$1,');
   const nums = [...text.matchAll(/(NT\$|NTD|\$|新臺幣|新台幣)?\s*(\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?\s*(元)?/g)]
     .map((m) => ({ value: Number(m[2].replace(/,/g, '')), marked: !!(m[1] || m[3]) }))
     .filter((n) => n.value >= MIN_AMOUNT);
@@ -308,10 +316,15 @@ export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO()) {
   const fromBarcode = parseConvenienceBarcodes(barcodeTexts, today);
   const texts = (Array.isArray(ocrTexts) ? ocrTexts : [ocrTexts]).filter(Boolean).map((t) => parseBillText(t, today));
   const fromText = {};
+  const rawTexts = (Array.isArray(ocrTexts) ? ocrTexts : [ocrTexts]).filter(Boolean);
+  // 好幾次 OCR 都找到金額時,採用「找到它的關鍵字最可靠」的那個;一樣可靠時,採用在帳單上出現最多次的
+  // (例如一次把 2,219 看成「2,.219」得到 219,另一次在三個地方都讀到 2,219)
+  const allText = rawTexts.map(normalizeOcrText).join('\n');
+  const seen = (n) => [...allText.matchAll(/\d[\d,.]*/g)].filter((m) => Number(m[0].replace(/[,.]/g, '')) === n).length;
   let amountRank = Infinity;
   for (const r of texts) {
-    // 好幾次 OCR 都找到金額時,採用「找到它的關鍵字最可靠」的那個
-    if (r.amount != null && r.amountRank < amountRank) {
+    if (r.amount != null && (r.amountRank < amountRank
+      || (r.amountRank === amountRank && r.amount !== fromText.amount && seen(r.amount) > seen(fromText.amount)))) {
       fromText.amount = r.amount;
       amountRank = r.amountRank;
     }
@@ -345,9 +358,17 @@ export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO()) {
     ...fromBarcode,
     source: { amount: amountSource, dueDate: dueSource },
   };
+  // 台電等帳單:條碼上的日期是「代收截止日」(超商最後收單日),比帳單上的「繳費期限」晚,
+  // 過了繳費期限就開始算遲付費用。截止日改用繳費期限,代收截止日記成 collectCutoff(畫面上寫進備註)。
+  if (dueSource === 'barcode' && fromText.dueDate && !fromText.dueDateGuessed && fromText.dueDate < fromBarcode.dueDate
+    && diffDays(fromText.dueDate, fromBarcode.dueDate) <= 60 && rawTexts.some((t) => /代收截止/.test(normalizeOcrText(t)))) {
+    result.collectCutoff = fromBarcode.dueDate;
+    result.dueDate = fromText.dueDate;
+    result.source.dueDate = 'ocr';
+    return result;
+  }
   // 稅單:條碼/表格上的「繳納截止日」是繳納期間屆滿後 3 日(稅單上有註明)。
   // 截止日改用繳納期間最後一天,條碼上的日期另外記成 taxCutoff(畫面上寫進備註)。
-  const rawTexts = (Array.isArray(ocrTexts) ? ocrTexts : [ocrTexts]).filter(Boolean);
   const isTax = fromBarcode.taxQr || rawTexts.some((t) => TAX_GRACE_RE.test(normalizeOcrText(t)));
   if (isTax && result.dueDate && dueSource !== 'guess') {
     result.taxCutoff = result.dueDate;
@@ -360,7 +381,7 @@ export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO()) {
 function printedBarcodes(texts, today) {
   const tokens = texts.flatMap((t) => t.split('\n'))
     .map((line) => line.replace(/\s+/g, '').toUpperCase())
-    .filter((t) => /^\d{6}[0-9A-Z]{3}$|^\d{4}[0-9A-Z]{2}\d{9}$/.test(t));
+    .filter((t) => /^\d{6}[0-9A-Z]{3}$|^\d{4}[0-9A-Z-]{2}\d{9}$/.test(t));
   const r = parseConvenienceBarcodes(tokens, today);
   return { dueDate: r.dueDate, amount: r.amount, period: r.period };
 }

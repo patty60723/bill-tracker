@@ -5,7 +5,7 @@
 //    用 periodicsync 叫醒這裡,有快截止、逾期、該拿繳費單的帳單就跳通知。
 import { notifyReminders, SYNC_TAG } from './src/notify.js';
 
-const CACHE = 'bill-tracker-v27';
+const CACHE = 'bill-tracker-v28';
 const ASSETS = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png',
   'icon-maskable-512.png', 'badge-96.png',

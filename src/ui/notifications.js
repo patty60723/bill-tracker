@@ -70,7 +70,9 @@ export async function testNotification() {
   if (perm !== 'granted') {
     return say(`⚠️ 通知權限沒有開啟(目前狀態:${perm === 'denied' ? '已封鎖' : '還沒允許'})。<br>${ANDROID_NOTIFY_HELP}`);
   }
-  const reg = await navigator.serviceWorker.getRegistration();
+  // 等 service worker 啟用(剛裝好第一次開時還在安裝,這時 showNotification 會失敗);
+  // 完全沒有註冊(例如不是 HTTPS)的話 ready 永遠不會好,5 秒後放棄
+  const reg = await Promise.race([navigator.serviceWorker.ready, new Promise((r) => setTimeout(() => r(null), 5000))]);
   if (!reg) return say('⚠️ app 還沒準備好(需要用 HTTPS 網址開啟),請重新整理後再試。');
   try {
     await sendTestNotification(reg);

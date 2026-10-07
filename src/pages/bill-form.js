@@ -320,6 +320,7 @@ export async function renderBillForm(id, params) {
     if (!file) return;
     if (!(await startScan())) return;
     scan.size = await imageSize(file);
+    scan.screenshot = file.type === 'image/png'; // 手機截圖是 PNG,相機拍的是 JPEG/HEIC
     scan.timings = [];
     scan.photos.push(...await addFiles('billFiles', [file]));
     setStatus('🔍 辨識條碼中…');
@@ -370,7 +371,12 @@ export async function renderBillForm(id, params) {
     } else missing.push('金額');
     if (r.dueDate) {
       fill('dueDate', r.dueDate);
-      found.push(`截止日 ${formatDate(r.dueDate)}(${r.taxCutoff ? '稅單繳納期間最後一天' : via(r.source.dueDate)})`);
+      found.push(`截止日 ${formatDate(r.dueDate)}(${r.taxCutoff ? '稅單繳納期間最後一天' : r.collectCutoff ? '帳單上的繳費期限' : via(r.source.dueDate)})`);
+      if (r.collectCutoff) {
+        const note = `條碼上的 ${formatDate(r.collectCutoff)} 是代收截止日(超商最後收單日),過了繳費期限可能會加收遲付費用`;
+        const notes = field('notes');
+        if (!notes.value.includes(note)) fill('notes', notes.value ? `${notes.value}\n${note}` : note);
+      }
       if (r.taxCutoff) {
         // 條碼上的日期是「繳納期間屆滿後 3 日」,記在備註,不當截止日
         const note = `條碼上的繳納截止日是 ${formatDate(r.taxCutoff)}(繳納期間屆滿後 3 日)`;
@@ -399,6 +405,7 @@ export async function renderBillForm(id, params) {
     const lines = [];
     if (found.length) lines.push(`✅ 已帶入:${found.join('、')}`);
     if (r.taxCutoff) lines.push(`🏛️ 稅單:條碼上的 ${formatDate(r.taxCutoff)} 是繳納期間屆滿後 3 日,截止日用 ${formatDate(r.dueDate)}(已寫進備註)。`);
+    if (r.collectCutoff) lines.push(`📅 條碼上的 ${formatDate(r.collectCutoff)} 是代收截止日,截止日用帳單上的繳費期限 ${formatDate(r.dueDate)}(已寫進備註)。`);
     if (movedPeriod) lines.push(`📅 帳單月份已改成 <b>${formatPeriod(field('period').value)}</b>(跟截止日同月),存檔後會列在那個月份底下;不對的話請直接改。`);
     if (r.source.dueDate === 'guess') lines.push('⚠️ 帳單上沒找到「繳費期限」之類的字,截止日是用帳單上最晚的日期<b>推測</b>的,請一定要核對。');
     if (missing.length) lines.push(`⚠️ 沒辨識出${missing.join('、')},請手動填寫。`);
@@ -406,7 +413,9 @@ export async function renderBillForm(id, params) {
     if (scan.size && Math.max(scan.size.width, scan.size.height) < LOW_RES) {
       lines.push(`⚠️ 這張照片只有 ${scan.size.width}×${scan.size.height},解析度偏低,條碼和小字容易讀不到。可以改用「🖼️ 從相簿選」:先用手機相機 App 拍,再從相簿選。`);
     }
-    if (r.source.dueDate !== 'barcode' && !barcodesEnough(barcodes)) {
+    if (r.source.dueDate !== 'barcode' && !barcodesEnough(barcodes) && scan.screenshot) {
+      lines.push('💡 截圖的解析度通常不夠讀條碼(條碼線太細),金額和截止日是從文字讀的,請核對。');
+    } else if (r.source.dueDate !== 'barcode' && !barcodesEnough(barcodes)) {
       lines.push('💡 截止日、金額最準的來源是帳單下方的超商條碼。條碼沒讀到的話,按「▦ 對準條碼掃」把鏡頭靠近條碼試試。');
     }
     lines.push('<span class="muted small">照片已存下。辨識偶爾會看錯,存檔前請核對。</span>');
