@@ -25,11 +25,12 @@ index.html ── src/app.js ─┬─ db.js ─────────── I
                           ├─ notify.js ─────── 通知(也被 sw.js import)
                           ├─ ics.js ────────── 行事曆匯出
                           ├─ stats.js ──────── 年度統計、搜尋、CSV
+                          ├─ backup.js ─────── 備份提醒判斷(也被 notify.js 用)
                           └─ modal.js ──────── 對話框
 sw.js ── notify.js / schedule.js / db.js(背景提醒)
 ```
 
-**模組邊界**:`dates / schedule / parse / ics / enhance / stats` 是純函式、不碰 DOM,可以直接在 node 測試;
+**模組邊界**:`dates / schedule / parse / ics / enhance / stats / backup` 是純函式、不碰 DOM,可以直接在 node 測試;
 `db / notify` 只用 IndexedDB 與 Notification API,可在 service worker 內執行;
 其餘(`app / scan / livescan / modal`)才碰 DOM。
 
@@ -47,7 +48,7 @@ sw.js ── notify.js / schedule.js / db.js(背景提醒)
 | `templates` | `id` | 固定繳費 |
 | `bills` | `id`(index:`period`) | 每期帳單 |
 | `files` | `id` | 照片 / PDF:`{ id, blob, name, type, createdAt }` |
-| `meta` | `key` | 雜項狀態,目前只有 `lastNotified: { date, keys[] }` |
+| `meta` | `key` | 雜項狀態:`lastNotified: { date, keys[] }`、`lastBackupAt`、`backupSnoozeUntil`、`onboardingDismissed` |
 
 ```js
 template = { id, name, category, amount, cycleMonths, anchorMonth, arrivalDay, dueDay,
@@ -80,6 +81,29 @@ bill     = { id, name, templateId, category, period, cycleMonths, amount, dueDat
 
 `exportAll()` → `{ app: 'bill-tracker', version: 1, exportedAt, templates, bills, files }`,
 檔案的 blob 轉成 data URL。`importAll()` 會先清空三個 store 再寫入(取代,不合併)。
+
+### 備份提醒與存檔(`src/backup.js`、`app.backupNow()`)
+
+`backupStatus({ lastBackupAt, snoozeUntil, records })`(records = 帳單 + 固定繳費):
+
+- `changes` = `max(createdAt, updatedAt) > lastBackupAt` 的筆數(從沒備份過 = 全部)。
+- `due`:有資料,且
+  - 從沒備份過:最早一筆資料建立已滿 3 天;或
+  - `changes > 0` 且(距上次備份 ≥ 30 天,或 `changes ≥ 20` 且 ≥ 7 天)。
+  - `snoozeUntil` 未到期時一律 false(「7 天後再提醒」)。
+- 通知:`notify.urgentReminders()` 在 `due` 時加一個 `kind: 'backup'` 項目,去重 key 用月份,
+  所以同一個月最多通知一次。
+
+存檔用 Web Share API Level 2(`navigator.share({ files })`):
+
+- Chrome 只允許分享特定副檔名,`.json` 不在清單內 → 依序用 `canShare()` 試 `.json`、`.txt`
+  (匯入兩種都收);都不行就 `download`。
+- `share()` 需要使用者手勢(transient activation);匯出含大量照片時準備檔案可能超過時限而丟
+  `NotAllowedError` → 彈出對話框讓使用者再點一次「分享」。
+- `AbortError`(在分享選單按取消)→ 不記錄;分享成功或已下載 → 寫入 `lastBackupAt`、清掉 snooze。
+  分享成功不代表使用者真的存到了雲端,只能在提示文字中提醒。
+- 匯入:`describeBackup()` 驗證 `app === 'bill-tracker'` 並統計內容,確認對話框列出備份時間、
+  筆數與目前會被清掉的筆數;匯入成功後把 `lastBackupAt` 設成備份檔的 `exportedAt`。
 
 ---
 
@@ -527,7 +551,7 @@ for 每個 active && autoPay 的 template:
 
 `node --test tests/*.test.mjs`,不需安裝套件。涵蓋:三段式條碼(民國/西元年、MMDD)、稅單 QR、
 OCR 文字(含 Tesseract 真實輸出的空白、表格、雜訊行、錯字、全形)、日期寬鬆格式、帳號與銀行代碼、
-稅單寬限、跨 OCR 合併、週期、提醒、自動扣款、月統計、年度統計與同期比較、搜尋、CSV 跳脫、ICS、
+稅單寬限、跨 OCR 合併、週期、提醒、自動扣款、月統計、年度統計與同期比較、搜尋、CSV 跳脫、備份提醒、ICS、
 影像增強(用合成像素驗證紙張變白、文字保持深色)。
 
 `tests/fixtures/*.txt` 是真實帳單的 OCR 輸出,姓名、地址、帳號、銷帳編號都換成假的(格式不變)。

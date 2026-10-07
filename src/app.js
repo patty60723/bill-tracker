@@ -11,6 +11,7 @@ import {
 } from './schedule.js';
 import { buildICS } from './ics.js';
 import { billsToCSV, billYears, matchBill, yearStats } from './stats.js';
+import { backupStatus, backupSummary, describeBackup, SNOOZE_DAYS } from './backup.js';
 import { compressImage, imageSize, readBarcodes, readText } from './scan.js';
 import {
   notifyReminders, REMINDER_TEXT, sendTestNotification, SYNC_TAG, TEST_TAG,
@@ -200,9 +201,31 @@ function onboardingCard({ hasData }) {
   </section>`;
 }
 
+async function getBackupStatus(templates, bills) {
+  return backupStatus({
+    lastBackupAt: await db.getMeta('lastBackupAt'),
+    snoozeUntil: await db.getMeta('backupSnoozeUntil'),
+    records: [...bills, ...templates],
+  });
+}
+
+function backupCard(status) {
+  return `<div class="card reminder warn backup-card">
+    <div class="grow">
+      <div class="title">💾 該備份了</div>
+      <div class="sub">${esc(backupSummary(status))}。資料只存在這支手機裡,手機壞掉或清除瀏覽器資料時,備份檔可以把資料救回來。</div>
+      <div class="btn-row backup-actions">
+        <button class="btn small primary" data-backup-now>立即備份</button>
+        <button class="btn small" data-backup-snooze>${SNOOZE_DAYS} 天後再提醒</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 async function renderHome() {
   const { templates, bills } = await loadAll();
   const showOnboarding = !(await db.getMeta('onboardingDismissed'));
+  const backup = await getBackupStatus(templates, bills);
   const today = todayISO();
   const reminders = buildReminders(templates, bills, today);
   const [y, m] = today.split('-').map(Number);
@@ -215,6 +238,7 @@ async function renderHome() {
       <a class="btn big" href="#/bill/new">＋ 手動新增</a>
     </div>
     ${showOnboarding ? onboardingCard({ hasData: templates.length + bills.length > 0 }) : notifyBanner(templates.length + bills.length)}
+    ${backup.due ? backupCard(backup) : ''}
     <section>
       <h2>待辦提醒</h2>
       ${reminders.length ? reminders.map((r) => reminderCard(r, bills.find((b) => b.id === r.billId))).join('') : `<div class="empty">目前沒有要處理的帳單 🎉${templates.length || showOnboarding ? '' : '<br><a href="#/template/new">先設定固定繳費</a>,就會自動提醒你拿繳費單、繳費截止。'}</div>`}
@@ -1117,6 +1141,65 @@ async function renderTemplateForm(id) {
   });
 }
 
+// ---------- 備份 ----------
+
+/**
+ * 備份:優先用分享選單(Android 可以直接選「雲端硬碟」,或 Gmail / LINE 傳給自己),
+ * 不支援分享檔案時改成下載。成功(分享出去或已下載)才記下備份時間。
+ */
+async function backupNow() {
+  toast('準備備份檔…');
+  const data = await db.exportAll();
+  const name = `bill-tracker-backup-${todayISO()}`;
+  const json = JSON.stringify(data);
+  // Chrome 的分享只允許特定副檔名;.json 不行時改用 .txt(匯入時兩種都收)
+  const candidates = [
+    new File([json], `${name}.json`, { type: 'application/json' }),
+    new File([json], `${name}.txt`, { type: 'text/plain' }),
+  ];
+  const shareable = candidates.find((f) => navigator.canShare?.({ files: [f] }));
+  let result = 'downloaded';
+  if (shareable) {
+    result = await shareFile(shareable);
+    if (result === 'needs-gesture') {
+      // 準備檔案花太久,瀏覽器不再把這次當成使用者點擊:請使用者再點一次
+      const again = await ask({
+        title: '備份檔準備好了',
+        message: `約 ${Math.max(1, Math.round(json.length / 1024 / 1024))} MB。點「分享」選擇雲端硬碟,或傳給自己保存。`,
+        actions: [{ label: '分享 / 存到雲端', value: true, kind: 'primary' }, { label: '改用下載', value: false }],
+        cancelValue: null,
+      });
+      if (again === null) return toast('沒有備份');
+      result = again ? await shareFile(shareable) : 'download';
+    }
+    if (result === 'cancelled') return toast('沒有備份');
+    if (result !== 'shared') result = 'download';
+  }
+  if (result !== 'shared') download(`${name}.json`, json, 'application/json');
+  await db.setMeta('lastBackupAt', new Date().toISOString());
+  await db.setMeta('backupSnoozeUntil', '');
+  toast(result === 'shared' ? '已備份(記得存到雲端硬碟或傳給自己)' : '備份檔已下載到手機的「下載」資料夾');
+  render();
+}
+
+async function shareFile(file) {
+  try {
+    await navigator.share({ files: [file], title: '繳費小幫手備份' });
+    return 'shared';
+  } catch (e) {
+    if (e.name === 'AbortError') return 'cancelled';
+    if (e.name === 'NotAllowedError') return 'needs-gesture';
+    console.warn('分享失敗', e);
+    return 'failed';
+  }
+}
+
+async function snoozeBackup() {
+  await db.setMeta('backupSnoozeUntil', new Date(Date.now() + SNOOZE_DAYS * 86400000).toISOString());
+  toast(`${SNOOZE_DAYS} 天後再提醒`);
+  render();
+}
+
 // ---------- 設定 ----------
 
 function download(name, content, type) {
@@ -1129,6 +1212,9 @@ function download(name, content, type) {
 
 async function renderSettings() {
   const persisted = await navigator.storage?.persisted?.();
+  const all = await loadAll();
+  const backup = await getBackupStatus(all.templates, all.bills);
+  const backupAt = await db.getMeta('lastBackupAt');
   view.innerHTML = `
     <header class="page-head"><h1>設定</h1></header>
     <section class="card col">
@@ -1147,11 +1233,13 @@ async function renderSettings() {
     </section>
     <section class="card col">
       <h3>💾 備份</h3>
-      <p class="muted small">資料只存在這支手機的瀏覽器裡。換手機或清除瀏覽器資料前,請先匯出備份(包含照片與繳費證明)。${persisted ? '' : '<br>建議按「保護資料」,降低瀏覽器空間不足時自動清掉資料的機會。'}</p>
+      <p class="small backup-status ${backup.due ? 'due' : ''}">${esc(backupSummary(backup))}${backupAt ? `<span class="muted">(${formatDate(backupAt.slice(0, 10))})</span>` : ''}</p>
+      <p class="muted small">資料只存在這支手機的瀏覽器裡。按「立即備份」會開分享選單,選「雲端硬碟」或傳給自己保存;
+        換手機時在新手機「匯入備份」即可(包含照片與繳費證明)。該備份時首頁和通知會提醒你。${persisted ? '' : '<br>建議按「保護資料」,降低瀏覽器空間不足時自動清掉資料的機會。'}</p>
       <div class="btn-row">
-        <button class="btn" id="export">匯出備份</button>
+        <button class="btn primary" id="export">立即備份</button>
+        <label class="btn file-btn">匯入備份<input type="file" id="import" accept="application/json,.json,text/plain,.txt" hidden></label>
         <button class="btn" id="export-csv">匯出帳單 CSV</button>
-        <label class="btn file-btn">匯入備份<input type="file" id="import" accept="application/json,.json" hidden></label>
         ${persisted ? '<span class="badge ok">資料已受保護</span>' : '<button class="btn" id="persist">保護資料</button>'}
       </div>
     </section>`;
@@ -1181,20 +1269,32 @@ async function renderSettings() {
     if (!bills.length) return toast('還沒有帳單');
     download(`bills-all-${todayISO()}.csv`, billsToCSV(bills, catLabel), 'text/csv');
   };
-  $('#export').onclick = async () => {
-    download(`bill-tracker-backup-${todayISO()}.json`, JSON.stringify(await db.exportAll()), 'application/json');
-  };
+  $('#export').onclick = () => backupNow();
   $('#import').onchange = async (e) => {
     const file = e.target.files[0];
     e.target.value = '';
-    if (!file || !(await confirmDialog({
-      title: '用備份取代目前的資料?',
-      message: '匯入會清掉這支手機上目前所有的帳單、固定繳費和照片,換成備份檔裡的內容。',
+    if (!file) return;
+    let data;
+    let info;
+    try {
+      data = JSON.parse(await file.text());
+      info = describeBackup(data);
+    } catch (err) {
+      return alertDialog({ title: '無法讀取這個檔案', message: err instanceof SyntaxError ? '檔案格式不對,請選「繳費小幫手」匯出的備份檔。' : err.message });
+    }
+    const { templates, bills } = await loadAll();
+    const when = info.exportedAt ? new Date(info.exportedAt).toLocaleString('zh-TW', { dateStyle: 'medium', timeStyle: 'short' }) : '不明';
+    if (!(await confirmDialog({
+      title: '用這個備份取代目前的資料?',
+      message: `備份時間:${when}\n備份內容:${info.bills} 筆帳單、${info.templates} 個固定繳費、${info.files} 個檔案\n\n`
+        + `目前手機上的 ${bills.length} 筆帳單、${templates.length} 個固定繳費會被清掉,換成備份檔的內容。`,
       ok: '取代並匯入',
       danger: true,
     }))) return;
     try {
-      await db.importAll(JSON.parse(await file.text()));
+      await db.importAll(data);
+      // 剛從備份還原,等於有一份最新備份
+      await db.setMeta('lastBackupAt', info.exportedAt || new Date().toISOString());
       toast('匯入完成');
     } catch (err) {
       await alertDialog({ title: '匯入失敗', message: err.message });
@@ -1363,6 +1463,8 @@ async function render() {
 }
 
 view.addEventListener('click', async (e) => {
+  if (e.target.closest('[data-backup-now]')) return backupNow();
+  if (e.target.closest('[data-backup-snooze]')) return snoozeBackup();
   if (e.target.closest('[data-install]') && installPrompt) {
     installPrompt.prompt();
     await installPrompt.userChoice.catch(() => null);

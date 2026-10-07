@@ -4,6 +4,7 @@
 import * as db from './db.js';
 import { diffDays, formatDate, todayISO } from './dates.js';
 import { buildReminders } from './schedule.js';
+import { backupStatus } from './backup.js';
 
 export const SYNC_TAG = 'bill-reminders';
 // Android 通知不支援 SVG 圖示;badge 是狀態列上的小白圖示
@@ -20,14 +21,23 @@ export const REMINDER_TEXT = {
   'due-soon': (r) => (r.daysLeft === 0 ? '今天截止!' : `剩 ${r.daysLeft} 天截止(${formatDate(r.due)})`),
   unpaid: (r) => `未繳,${formatDate(r.due)} 截止`,
   autopay: (r) => `${formatDate(r.due)} 自動扣款`,
+  backup: (r) => (r.never ? '還沒備份過,資料只存在這支手機裡' : `已經 ${r.daysSince} 天沒備份了`),
 };
 
 const reminderKey = (r) => `${r.kind}:${r.billId || r.templateId}:${r.period}`;
 
 /** 要跳通知的提醒(藍色的「預告」「未繳但還早」不吵你)。 */
 export async function urgentReminders(today = todayISO()) {
-  const [templates, bills] = await Promise.all([db.getAll('templates'), db.getAll('bills')]);
-  return buildReminders(templates, bills, today).filter((r) => r.level !== 'info');
+  const [templates, bills, lastBackupAt, snoozeUntil] = await Promise.all([
+    db.getAll('templates'), db.getAll('bills'), db.getMeta('lastBackupAt'), db.getMeta('backupSnoozeUntil'),
+  ]);
+  const items = buildReminders(templates, bills, today).filter((r) => r.level !== 'info');
+  // 該備份了:同一個月只通知一次(key 用月份)
+  const backup = backupStatus({ lastBackupAt, snoozeUntil, records: [...bills, ...templates] });
+  if (backup.due) {
+    items.push({ kind: 'backup', level: 'warn', name: '資料備份', templateId: 'backup', period: today.slice(0, 7), ...backup });
+  }
+  return items;
 }
 
 /**

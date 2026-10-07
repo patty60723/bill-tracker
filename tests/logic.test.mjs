@@ -388,3 +388,33 @@ test('CSV:BOM、CRLF、跳脫、長數字當文字', async () => {
   assert.ok(csv.includes('"第一行\n第二行"'));
   assert.ok(csv.endsWith('\r\n'));
 });
+
+test('備份提醒:從沒備份、超過 30 天、改很多筆、延後提醒', async () => {
+  const { backupStatus, backupSummary, describeBackup } = await import('../src/backup.js');
+  const now = Date.parse('2026-10-07T12:00:00Z');
+  const rec = (c, u) => ({ createdAt: c, updatedAt: u || c });
+  // 沒資料:不提醒
+  assert.equal(backupStatus({ records: [], now }).due, false);
+  // 從沒備份:開始用 3 天後才提醒
+  assert.equal(backupStatus({ records: [rec('2026-10-06T00:00:00Z')], now }).due, false);
+  const never = backupStatus({ records: [rec('2026-10-01T00:00:00Z'), rec('2026-10-05T00:00:00Z')], now });
+  assert.deepEqual([never.due, never.never, never.changes], [true, true, 2]);
+  assert.equal(backupSummary(never), '還沒備份過(目前有 2 筆資料)');
+  // 備份過:30 天內不提醒;超過 30 天、而且之後有變更才提醒
+  const records = [rec('2026-08-01T00:00:00Z'), rec('2026-08-02T00:00:00Z', '2026-09-20T00:00:00Z')];
+  assert.equal(backupStatus({ lastBackupAt: '2026-09-10T00:00:00Z', records, now }).due, false);
+  const old = backupStatus({ lastBackupAt: '2026-09-01T00:00:00Z', records, now });
+  assert.deepEqual([old.due, old.daysSince, old.changes], [true, 36, 1]);
+  assert.equal(backupSummary(old), '上次備份是 36 天前,之後新增或修改了 1 筆');
+  assert.equal(backupStatus({ lastBackupAt: '2026-09-25T00:00:00Z', records, now }).due, false); // 之後沒變更
+  // 一週內改了 20 筆以上
+  const many = Array.from({ length: 20 }, () => rec('2026-10-05T00:00:00Z'));
+  assert.equal(backupStatus({ lastBackupAt: '2026-09-29T00:00:00Z', records: many, now }).due, true);
+  assert.equal(backupStatus({ lastBackupAt: '2026-10-03T00:00:00Z', records: many, now }).due, false);
+  // 「7 天後再提醒」期間不提醒
+  assert.equal(backupStatus({ lastBackupAt: '2026-09-01T00:00:00Z', snoozeUntil: '2026-10-10T00:00:00Z', records, now }).due, false);
+  // 備份檔摘要
+  assert.deepEqual(describeBackup({ app: 'bill-tracker', exportedAt: 'x', bills: [1, 2], templates: [1], files: [] }),
+    { exportedAt: 'x', bills: 2, templates: 1, files: 0 });
+  assert.throws(() => describeBackup({ foo: 1 }), /不是/);
+});
