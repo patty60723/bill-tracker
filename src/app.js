@@ -6,8 +6,8 @@ import { mergeScan, parseConvenienceBarcodes, scanComplete } from './parse.js';
 import { liveScan } from './livescan.js';
 import { alertDialog, ask, confirmDialog, copyDialog } from './modal.js';
 import {
-  buildReminders, CYCLES as BILL_CYCLES, cycleName, DEFAULT_REMIND_DAYS, monthSummary, nextPeriod, periodDates,
-  suggestTemplateDays,
+  AUTO_PAY_METHOD, buildReminders, CYCLES as BILL_CYCLES, cycleName, DEFAULT_REMIND_DAYS, monthSummary, nextPeriod,
+  periodDates, planAutoPay, suggestTemplateDays,
 } from './schedule.js';
 import { buildICS } from './ics.js';
 import { compressImage, imageSize, readBarcodes, readText } from './scan.js';
@@ -256,7 +256,8 @@ function billRow(b, t, today) {
         : left === 0 ? ['bad', '今天截止']
           : left <= 7 ? ['warn', `剩 ${left} 天`]
             : ['warn', '未繳'];
-  const meta = [b.dueDate ? `${formatDate(b.dueDate)} 截止` : '未填截止日'];
+  const meta = [b.dueDate ? `${formatDate(b.dueDate)} ${b.autoPaid ? '扣款' : '截止'}` : '未填截止日'];
+  if (b.autoPaid) meta.push('自動扣款');
   if (b.cycleMonths > 1) meta.push(`${cycleName(b.cycleMonths)}帳單`);
   const files = [];
   if (b.billFiles?.length) files.push('🧾 有繳費單');
@@ -276,17 +277,52 @@ function billRow(b, t, today) {
   </a>`;
 }
 
+/** 開檔案選擇器(拍照或選檔);使用者取消時回傳 []。要在點擊等使用者動作之後呼叫。 */
+function pickFiles({ camera = false } = {}) {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = camera ? 'image/*' : 'image/*,application/pdf';
+    if (camera) input.capture = 'environment';
+    else input.multiple = true;
+    input.onchange = () => resolve([...input.files]);
+    input.oncancel = () => resolve([]);
+    input.click();
+  });
+}
+
+/**
+ * 標記已繳,接著問要不要上傳繳費證明(拍照 / 選照片或 PDF / 之後再說),也可以在這裡復原。
+ */
 async function markPaid(id) {
   const before = await db.get('bills', id);
-  await db.put('bills', { ...before, status: 'paid', paidDate: todayISO(), updatedAt: new Date().toISOString() });
-  toast(`「${before.name}」已標記為已繳`, {
-    label: '復原',
-    onClick: async () => {
-      await db.put('bills', before);
-      toast('已復原為未繳');
-      render();
-    },
+  const paid = { ...before, status: 'paid', paidDate: todayISO(), updatedAt: new Date().toISOString() };
+  await db.put('bills', paid);
+  await render();
+  const choice = await ask({
+    title: `「${before.name}」已標記為已繳`,
+    message: '要順便上傳繳費證明嗎?(收據、轉帳截圖、PDF)',
+    cancelValue: 'later',
+    actions: [
+      { label: '📷 拍照上傳', value: 'camera', kind: 'primary' },
+      { label: '🖼️ 選照片或 PDF', value: 'pick' },
+      { label: '之後再說', value: 'later' },
+      { label: '復原(其實還沒繳)', value: 'undo', kind: 'link' },
+    ],
   });
+  if (choice === 'undo') {
+    await db.put('bills', before);
+    toast('已復原為未繳');
+    return render();
+  }
+  if (choice !== 'camera' && choice !== 'pick') return toast('已標記為已繳,之後可以在帳單頁上傳證明');
+  const files = await pickFiles({ camera: choice === 'camera' });
+  if (!files.length) return toast('已標記為已繳,之後可以在帳單頁上傳證明');
+  const ids = [];
+  for (const f of files) ids.push(await db.saveFile(await compressImage(f), f.name));
+  const latest = await db.get('bills', id);
+  await db.put('bills', { ...latest, proofFiles: [...(latest.proofFiles || []), ...ids], updatedAt: new Date().toISOString() });
+  toast(`已上傳 ${ids.length} 個繳費證明`);
   render();
 }
 
@@ -366,6 +402,8 @@ async function renderBillForm(id, params) {
             <label>每期截止日 <select name="dueDay">${dayOptions(15)}</select></label>
           </div>
           <label>截止前幾天提醒 <input type="number" name="remindDays" min="0" max="30" value="${DEFAULT_REMIND_DAYS}"></label>
+          <label class="switch"><input type="checkbox" name="autoPay" > 自動扣款</label>
+      <span class="muted small switch-hint">到截止日自動記成「已繳(自動扣繳)」,不再提醒拿單、繳費。金額先用預估金額,可以再改。</span>
           <p class="muted small" id="tpl-hint"></p>
         </div>
       </fieldset>
@@ -420,6 +458,8 @@ async function renderBillForm(id, params) {
     arrivalDay: Number(field('arrivalDay').value),
     dueDay: Number(field('dueDay').value),
     remindDays: Number(field('remindDays').value || 0),
+    autoPay: field('autoPay').checked,
+    autoPayFrom: field('autoPay').checked ? todayISO() : '',
     accountNo: digits(field('accountNo').value),
     bankCode: digits(field('bankCode').value),
     active: true,
@@ -712,6 +752,7 @@ async function renderBillForm(id, params) {
     }
     await db.put('bills', updated);
     guard.release();
+    if (savedTemplate) await runAutoPay();
     toast(savedTemplate ? '已儲存,也加進固定繳費了' : '已儲存');
     go(`#/bills?month=${updated.period}`);
   };
@@ -752,7 +793,7 @@ function showImage(src) {
 function cycleText(t) {
   const cycle = CYCLES.find(([n]) => n === t.cycleMonths)?.[1] || `每 ${t.cycleMonths} 個月`;
   const due = t.dueDay >= t.arrivalDay ? dayLabel(t.dueDay) : `隔月 ${dayLabel(t.dueDay)}`;
-  return `${cycle} · ${dayLabel(t.arrivalDay)}左右到單 · ${due}截止`;
+  return `${cycle} · ${dayLabel(t.arrivalDay)}左右到單 · ${due}截止${t.autoPay ? ' · 自動扣款' : ''}`;
 }
 
 async function renderTemplates() {
@@ -827,6 +868,8 @@ async function renderTemplateForm(id) {
       <p class="muted small" id="due-hint"></p>
       <label>截止前幾天提醒 <input type="number" name="remindDays" min="0" max="30" value="${esc(t.remindDays)}"></label>
       <label class="switch"><input type="checkbox" name="active" ${t.active ? 'checked' : ''}> 啟用提醒</label>
+      <label class="switch"><input type="checkbox" name="autoPay" ${t.autoPay ? 'checked' : ''}> 自動扣款</label>
+      <span class="muted small switch-hint">到截止日自動記成「已繳(自動扣繳)」,不再提醒拿單、繳費。金額先用預估金額,可以再改。</span>
       ${accountFields(t)}
       <label>備註 <textarea name="notes" rows="2" placeholder="例如:電號、用戶編號">${esc(t.notes)}</textarea></label>
       <div class="form-actions">
@@ -851,6 +894,7 @@ async function renderTemplateForm(id) {
     dueDay: Number(form.dueDay.value),
     remindDays: Number(form.remindDays.value || 0),
     active: form.active.checked,
+    autoPay: form.autoPay.checked,
     accountNo: digits(form.elements.namedItem('accountNo').value),
     bankCode: digits(form.elements.namedItem('bankCode').value),
     notes: form.notes.value.trim(),
@@ -869,9 +913,16 @@ async function renderTemplateForm(id) {
 
   form.onsubmit = async (e) => {
     e.preventDefault();
-    await db.put('templates', { ...read(), createdAt: t.createdAt || new Date().toISOString() });
+    const saved = { ...read(), createdAt: t.createdAt || new Date().toISOString() };
+    if (saved.autoPay && !t.autoPay) {
+      // 剛開啟自動扣款:從今天起截止的期別才自動記錄
+      saved.autoPayFrom = todayISO();
+      saved.autoPayDone = '';
+    }
+    await db.put('templates', saved);
     guard.release();
-    toast('已儲存');
+    const n = await runAutoPay();
+    toast(n ? `已儲存,並自動記錄 ${n} 筆自動扣款` : '已儲存');
     go('#/templates');
   };
   $('#delete')?.addEventListener('click', async () => {
@@ -1069,6 +1120,22 @@ async function notifyStatusHTML() {
     <div id="notif-result" class="notif-result small" hidden></div>`;
 }
 
+/** 套用自動扣款(見 schedule.planAutoPay),回傳新記成已繳的筆數。 */
+async function runAutoPay() {
+  const { templates, bills } = await loadAll();
+  const plan = planAutoPay(templates, bills, todayISO());
+  const now = new Date().toISOString();
+  for (const b of plan.create) await db.put('bills', { ...b, id: db.uid(), createdAt: now, updatedAt: now });
+  for (const { id, paidDate } of plan.markPaid) {
+    const b = await db.get('bills', id);
+    await db.put('bills', { ...b, status: 'paid', paidDate, paidMethod: b.paidMethod || AUTO_PAY_METHOD, autoPaid: true, updatedAt: now });
+  }
+  for (const { id, autoPayDone } of plan.templateUpdates) {
+    await db.put('templates', { ...(await db.get('templates', id)), autoPayDone });
+  }
+  return plan.create.length + plan.markPaid.length;
+}
+
 /** 清掉沒有任何帳單引用的檔案(例如新增帳單到一半直接關掉 app)。 */
 async function collectGarbage() {
   const bills = await db.getAll('bills');
@@ -1168,6 +1235,10 @@ window.addEventListener('beforeunload', (e) => {
   }
 });
 
-render();
+(async () => {
+  const autoPaid = await runAutoPay().catch((e) => { console.warn('自動扣款處理失敗', e); return 0; });
+  await render();
+  if (autoPaid) toast(`已自動記錄 ${autoPaid} 筆自動扣款`);
+})();
 collectGarbage();
 setupServiceWorker();

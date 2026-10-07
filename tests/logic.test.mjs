@@ -288,3 +288,42 @@ test('文件增強:陰影、色塊底變白,文字保持深色', async () => {
   assert.ok(at(41, 100) < 60, `亮處的字 ${at(41, 100)}`);
   assert.ok(at(251, 100) < 60, `色塊裡、陰影下的字 ${at(251, 100)}`);
 });
+
+test('自動扣款:截止日到了的期別自動記成已繳,未繳帳單標成已繳,記住處理到哪', async () => {
+  const { planAutoPay } = await import('../src/schedule.js');
+  const card = {
+    id: 'c', name: '信用卡', active: true, autoPay: true, cycleMonths: 1, anchorMonth: 1,
+    arrivalDay: 1, dueDay: 20, amount: 5000, accountNo: '123', bankCode: '822', createdAt: '2026-08-10T00:00:00Z',
+  };
+  // 8/10 建立:8 月那期 8/20 截止(建立後)→ 補;9 月 9/20 → 補;10 月 10/20 還沒到
+  const r = planAutoPay([card], [], '2026-10-06');
+  assert.deepEqual(r.create.map((b) => [b.period, b.dueDate, b.status, b.paidDate, b.paidMethod, b.amount]), [
+    ['2026-08', '2026-08-20', 'paid', '2026-08-20', '自動扣繳', 5000],
+    ['2026-09', '2026-09-20', 'paid', '2026-09-20', '自動扣繳', 5000],
+  ]);
+  assert.deepEqual(r.templateUpdates, [{ id: 'c', autoPayDone: '2026-09' }]);
+
+  // 已有 10 月未繳帳單(掃描的,截止日 10/22):10/22 當天標成已繳
+  const bills = [{ id: 'b10', templateId: 'c', period: '2026-10', status: 'unpaid', dueDate: '2026-10-22' }];
+  const later = { ...card, autoPayDone: '2026-09' };
+  assert.deepEqual(planAutoPay([later], bills, '2026-10-21'), { create: [], markPaid: [], templateUpdates: [] });
+  assert.deepEqual(planAutoPay([later], bills, '2026-10-22').markPaid, [{ id: 'b10', paidDate: '2026-10-22' }]);
+
+  // 處理過的期別不會重建(使用者刪掉自動建立的紀錄後不會再冒出來)
+  assert.equal(planAutoPay([later], [], '2026-10-06').create.length, 0);
+  // 建立前就截止的期別不補
+  assert.equal(planAutoPay([{ ...card, createdAt: '2026-09-25T00:00:00Z' }], [], '2026-10-06').create.length, 0);
+  // 對很久以前建立的項目「今天」才開啟自動扣款:不補過去的期別
+  assert.equal(planAutoPay([{ ...card, createdAt: '2025-01-01T00:00:00Z', autoPayFrom: '2026-10-06' }], [], '2026-10-06').create.length, 0);
+  assert.deepEqual(planAutoPay([{ ...card, createdAt: '2025-01-01T00:00:00Z', autoPayFrom: '2026-10-06' }], [], '2026-10-20').create.map((b) => b.period), ['2026-10']);
+  // 沒開自動扣款、或停用的不處理
+  assert.equal(planAutoPay([{ ...card, autoPay: false }], [], '2026-10-06').create.length, 0);
+  assert.equal(planAutoPay([{ ...card, active: false }], [], '2026-10-06').create.length, 0);
+});
+
+test('自動扣款:不提醒拿單/繳費,未繳帳單只顯示「自動扣款」', () => {
+  const card = { id: 'c', name: '信用卡', active: true, autoPay: true, cycleMonths: 1, anchorMonth: 1, arrivalDay: 1, dueDay: 20, createdAt: '2026-01-01T00:00:00Z' };
+  assert.equal(buildReminders([card], [], '2026-10-15').length, 0);
+  const r = buildReminders([card], [{ id: 'b', templateId: 'c', period: '2026-10', name: '信用卡', status: 'unpaid', dueDate: '2026-10-20' }], '2026-10-18');
+  assert.deepEqual(r.map((x) => [x.kind, x.level]), [['autopay', 'info']]);
+});

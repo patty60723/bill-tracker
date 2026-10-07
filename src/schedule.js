@@ -54,7 +54,8 @@ export function buildReminders(templates, bills, today) {
   const templateById = new Map(templates.map((t) => [t.id, t]));
 
   for (const t of templates) {
-    if (!t.active) continue;
+    // 自動扣款的項目不用提醒拿單/繳費:到截止日 planAutoPay 會自動記成已繳
+    if (!t.active || t.autoPay) continue;
     const remindDays = t.remindDays ?? DEFAULT_REMIND_DAYS;
     const createdDay = (t.createdAt || '').slice(0, 10);
     for (let i = -2; i <= 1; i++) {
@@ -89,7 +90,8 @@ export function buildReminders(templates, bills, today) {
       billId: b.id, templateId: b.templateId, period: b.period, name: b.name,
       due: b.dueDate, date: b.dueDate, amount: b.amount, daysLeft: left,
     };
-    if (left < 0) items.push({ ...base, kind: 'overdue', level: 'danger' });
+    if (t?.autoPay && t.active) items.push({ ...base, kind: 'autopay', level: 'info' });
+    else if (left < 0) items.push({ ...base, kind: 'overdue', level: 'danger' });
     else if (left <= remindDays) items.push({ ...base, kind: 'due-soon', level: 'warn' });
     else items.push({ ...base, kind: 'unpaid', level: 'info' });
   }
@@ -122,4 +124,62 @@ export function suggestTemplateDays(period, dueDate, today) {
   if (sameMonth && arrivalDay > dueDay) arrivalDay = 1;
   if (!sameMonth && arrivalDay <= dueDay) arrivalDay = dueDay >= 28 ? 28 : Math.max(dueDay + 1, 20);
   return { arrivalDay, dueDay };
+}
+
+export const AUTO_PAY_METHOD = '自動扣繳';
+const AUTO_PAY_MAX_PERIODS = 36;
+
+/**
+ * 自動扣款:截止日到了(≤ today)的期別自動記成已繳。
+ * - 這期還沒有帳單 → 建立一筆已繳帳單(金額用固定繳費的預估金額,可以再改)
+ * - 已經有帳單但未繳 → 標記已繳(以帳單上的截止日為準)
+ * 處理到哪一期記在 template.autoPayDone(YYYY-MM),之後只處理更新的期別;
+ * 這樣使用者刪掉自動建立的紀錄後,不會每次開 app 又冒出來。
+ * 只處理「開啟自動扣款那天(autoPayFrom,沒有就用建立日期)」之後截止的期別,
+ * 避免對一個建立很久的固定繳費開啟自動扣款時,一口氣補出好幾個月的「已繳」。
+ * @returns {{ create: object[], markPaid: { id, paidDate }[], templateUpdates: { id, autoPayDone }[] }}
+ */
+export function planAutoPay(templates, bills, today) {
+  const create = [];
+  const markPaid = [];
+  const templateUpdates = [];
+  const [ty, tm] = today.split('-').map(Number);
+  for (const t of templates) {
+    if (!t.active || !t.autoPay) continue;
+    const fromDay = t.autoPayFrom || (t.createdAt || '').slice(0, 10);
+    let start;
+    if (t.autoPayDone) {
+      start = addMonths(...t.autoPayDone.split('-').map(Number), 1);
+    } else {
+      // 上個月、上上個月到單的,可能這個月才截止
+      const [cy, cm] = (fromDay || today).split('-').map(Number);
+      start = addMonths(cy, cm, -2);
+    }
+    let done = t.autoPayDone || '';
+    for (let i = 0; i < AUTO_PAY_MAX_PERIODS; i++) {
+      const { year, month } = addMonths(start.year, start.month, i);
+      if (year * 12 + month > ty * 12 + tm) break;
+      if (!occursIn(t, year, month)) continue;
+      const period = periodKey(year, month);
+      const { due } = periodDates(t, period);
+      const existing = bills.find((b) => b.templateId === t.id && b.period === period);
+      const effectiveDue = existing?.dueDate || due;
+      if (effectiveDue > today) break; // 還沒到扣款日;之後的期別更晚,不用看了
+      done = period;
+      if (fromDay && effectiveDue < fromDay) continue; // 開啟自動扣款前就截止的不補
+      if (existing) {
+        if (existing.status !== 'paid') markPaid.push({ id: existing.id, paidDate: effectiveDue });
+      } else {
+        create.push({
+          name: t.name, templateId: t.id, category: t.category || 'other', period,
+          cycleMonths: t.cycleMonths || 1, amount: t.amount ?? '', dueDate: due,
+          accountNo: t.accountNo || '', bankCode: t.bankCode || '',
+          status: 'paid', paidDate: due, paidMethod: AUTO_PAY_METHOD, autoPaid: true,
+          notes: '', billFiles: [], proofFiles: [],
+        });
+      }
+    }
+    if (done && done !== t.autoPayDone) templateUpdates.push({ id: t.id, autoPayDone: done });
+  }
+  return { create, markPaid, templateUpdates };
 }

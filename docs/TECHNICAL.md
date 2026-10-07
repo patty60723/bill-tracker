@@ -50,9 +50,11 @@ sw.js ── notify.js / schedule.js / db.js(背景提醒)
 
 ```js
 template = { id, name, category, amount, cycleMonths, anchorMonth, arrivalDay, dueDay,
-             remindDays, accountNo, bankCode, active, notes, createdAt }
+             remindDays, accountNo, bankCode, active, notes, createdAt,
+             autoPay, autoPayFrom /* YYYY-MM-DD 開啟日 */, autoPayDone /* YYYY-MM 處理到哪期 */ }
 bill     = { id, name, templateId, category, period, cycleMonths, amount, dueDate,
              accountNo, bankCode, status: 'paid'|'unpaid', paidDate, paidMethod, notes,
+             autoPaid /* 由自動扣款記成已繳 */,
              billFiles: [fileId], proofFiles: [fileId], createdAt, updatedAt }
 ```
 
@@ -120,7 +122,14 @@ Esc(`cancel` 事件)或點 backdrop(click 的 target 是 dialog 本身)都回傳
 ### 提示列(toast)
 
 `toast(msg, action?)`:有動作按鈕(例如「復原」)時停留 6 秒、可點,否則 2.4 秒。
-「標記已繳」的復原是把整筆標記前的物件 `put` 回去。
+### 標記已繳 → 上傳證明
+
+`markPaid(id)`:先寫入已繳並重繪,再開 `ask()` 對話框(📷 拍照上傳 / 🖼️ 選照片或 PDF / 之後再說 / 復原)。
+選上傳時用動態建立的 `<input type=file>`(拍照:`accept=image/*` + `capture=environment`;
+選檔:`image/*,application/pdf` + `multiple`)並 `click()`——對話框按鈕的點擊提供了開檔案選擇器所需的
+使用者手勢(transient activation 在 await 之後仍有效)。使用者取消選擇器時靠 `cancel` 事件回傳空陣列。
+檔案壓縮後存進 `files`,id 附加到帳單的 `proofFiles`(重新讀一次帳單再寫,避免蓋掉期間的變更)。
+復原是把標記前的整筆物件 `put` 回去。
 
 ---
 
@@ -376,6 +385,32 @@ Tesseract 內部用**單一全域門檻**二值化,遇到半邊陰影、色塊�
 **已登記、未繳的帳單**:逾期 → `overdue`(danger);≤ remindDays → `due-soon`(warn);其他 → `unpaid`(info)。
 
 排序:level(danger → warn → info),再依日期。
+
+**自動扣款**的固定繳費(`autoPay`)不產生上面這些「拿單/沒登記」提醒;它的未繳帳單一律是
+`autopay`(info,「M/D 自動扣款」)。
+
+### 自動扣款 `planAutoPay(templates, bills, today)`
+
+純函式,回傳要做的事,由 `app.runAutoPay()` 寫入資料庫(app 啟動時、儲存固定繳費後、
+從帳單建立固定繳費後各跑一次):
+
+```
+for 每個 active && autoPay 的 template:
+  起點 = autoPayDone 的下一個月;沒有的話 = (autoPayFrom 或 createdAt) 的前 2 個月
+  依月份往後走(最多 36 個月,不超過本月),只看 occursIn 的期別:
+    effectiveDue = 該期已有帳單的 dueDate ?? periodDates().due
+    effectiveDue > today → 停(之後的期別只會更晚)
+    autoPayDone = 這期
+    effectiveDue < (autoPayFrom 或建立日) → 跳過(開啟前就截止的不補)
+    已有帳單且未繳 → markPaid(paidDate = effectiveDue)
+    沒有帳單      → create(已繳、paidMethod '自動扣繳'、autoPaid、金額 = 預估金額)
+  autoPayDone 有前進 → templateUpdates
+```
+
+- **`autoPayDone` 水位線**讓處理具有冪等性:重開 app 不會重複建立;使用者刪掉自動建立的紀錄後也不會再冒出來。
+- **`autoPayFrom`**:在表單把 `autoPay` 從關變開時設成今天並清空 `autoPayDone`,
+  避免對建立很久的項目一開就補出好幾個月的「已繳」。
+- 以帳單自己的 `dueDate` 為準(掃描讀到的實際扣款日可能跟固定繳費設定差一兩天)。
 
 ### 從帳單推固定繳費的預設日 `suggestTemplateDays(period, dueDate, today)`
 

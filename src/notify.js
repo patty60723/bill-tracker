@@ -19,6 +19,7 @@ export const REMINDER_TEXT = {
   overdue: (r) => `已逾期 ${-r.daysLeft} 天(${formatDate(r.due)} 截止)`,
   'due-soon': (r) => (r.daysLeft === 0 ? '今天截止!' : `剩 ${r.daysLeft} 天截止(${formatDate(r.due)})`),
   unpaid: (r) => `未繳,${formatDate(r.due)} 截止`,
+  autopay: (r) => `${formatDate(r.due)} 自動扣款`,
 };
 
 const reminderKey = (r) => `${r.kind}:${r.billId || r.templateId}:${r.period}`;
