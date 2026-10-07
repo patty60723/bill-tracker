@@ -24,11 +24,12 @@ index.html ── src/app.js ─┬─ db.js ─────────── I
                           ├─ livescan.js ───── 即時相機掃條碼(用 scan.detectCanvas)
                           ├─ notify.js ─────── 通知(也被 sw.js import)
                           ├─ ics.js ────────── 行事曆匯出
+                          ├─ stats.js ──────── 年度統計、搜尋、CSV
                           └─ modal.js ──────── 對話框
 sw.js ── notify.js / schedule.js / db.js(背景提醒)
 ```
 
-**模組邊界**:`dates / schedule / parse / ics / enhance` 是純函式、不碰 DOM,可以直接在 node 測試;
+**模組邊界**:`dates / schedule / parse / ics / enhance / stats` 是純函式、不碰 DOM,可以直接在 node 測試;
 `db / notify` 只用 IndexedDB 與 Notification API,可在 service worker 內執行;
 其餘(`app / scan / livescan / modal`)才碰 DOM。
 
@@ -91,7 +92,8 @@ bill     = { id, name, templateId, category, period, cycleMonths, amount, dueDat
 | hash | 頁面 |
 |---|---|
 | `#/` | 首頁(提醒、本月統計) |
-| `#/bills?month=…&filter=…`(month:`YYYY-MM` 或 `all`;filter:`all` / `paid` / `unpaid`) | 紀錄 |
+| `#/bills?month=…&filter=…&q=…`(month:`YYYY-MM` 或 `all`;filter:`all` / `paid` / `unpaid`;q:搜尋字) | 紀錄 |
+| `#/bills?view=stats&year=YYYY` | 統計 |
 | `#/bill/new?template=&period=&scan=1`、`#/bill/:id` | 帳單表單 |
 | `#/templates`、`#/template/new`、`#/template/:id` | 固定繳費 |
 | `#/settings` | 設定 |
@@ -130,6 +132,23 @@ Esc(`cancel` 事件)或點 backdrop(click 的 target 是 dialog 本身)都回傳
 使用者手勢(transient activation 在 await 之後仍有效)。使用者取消選擇器時靠 `cancel` 事件回傳空陣列。
 檔案壓縮後存進 `files`,id 附加到帳單的 `proofFiles`(重新讀一次帳單再寫,避免蓋掉期間的變更)。
 復原是把標記前的整筆物件 `put` 回去。
+
+### 紀錄頁的搜尋
+
+搜尋框輸入時只重畫下方的 `#bills-body`(整頁重畫會讓輸入框失去焦點、手機鍵盤收起),
+並用 `history.replaceState` 把 `q` 寫進網址(不產生瀏覽紀錄),點進帳單再返回時搜尋字還在。
+同時更新 `currentHash`,避免離開前確認把網址改回舊的。
+
+### 新手引導
+
+- 狀態存在 `meta.onboardingDismissed`;設定頁可以設回 `false`。
+- 三個步驟的「完成」都是即時判斷,不另外存:
+  - 已安裝:`matchMedia('(display-mode: standalone)')` 或 iOS 的 `navigator.standalone`。
+  - 通知:`Notification.permission === 'granted'`。
+  - 建立第一筆:有任何固定繳費或帳單。
+- Android Chrome 判定可安裝時會發 `beforeinstallprompt`:`preventDefault()` 後存起來,首頁顯示
+  「安裝 app」按鈕,點擊時呼叫 `prompt()`(每個事件只能用一次,用完清掉)。沒有這個事件時
+  (iOS、已安裝、或 Chrome 還沒判定)改顯示文字步驟,依 user agent 區分 iPhone / Android。
 
 ---
 
@@ -422,7 +441,41 @@ for 每個 active && autoPay 的 template:
 
 ---
 
-## 8. 通知(`src/notify.js`、`sw.js`)
+## 8. 統計、搜尋、CSV(`src/stats.js`)
+
+### 年度統計 `yearStats(bills, year, throughMonth)`
+
+- 以**帳單月份**(`period`)歸年,和月統計一致(不是用繳費日期或截止日)。
+- `byMonth`:12 格的總額、已繳、筆數;`byCategory`:依金額排序,含筆數。
+- **跟去年比較用同期**:`throughMonth` = 今年的本月(過去年份 = 12),今年與去年都只加總
+  1 月 ~ `throughMonth` 月(`compareTotal` vs `prevTotal`),`change = (compareTotal − prevTotal) / prevTotal`。
+  > 若直接拿今年 1–10 月比去年全年,會系統性地顯示「比去年少」。
+- `monthlyAvg` = 總額 ÷ 有帳單的月數(不是 ÷ 12,避免年初的平均被低估)。
+- 金額空白當 0 計入筆數。
+
+### 長條圖
+
+純 HTML/CSS(沒有圖表函式庫):12 欄 grid,欄距 2 px;長條高度 = 該月 / 全年最大月 × 100%,
+有金額的月份至少 3% 讓它看得到;上緣 4 px 圓角、貼齊底線;只在最高的那個月標數字,其他月份點長條
+後在下方顯示明細(金額、已繳、筆數、「看這個月」連結),點選時其他長條變淡。單一系列只用主色,
+已繳/未繳不用顏色區分(以文字呈現)。每根長條是 `<button>` 並有 `aria-label`(月份 + 金額)。
+
+### 搜尋 `matchBill(bill, query, categoryLabel)`
+
+空白切成多個關鍵字,**每一個**都要出現在下列欄位串起來的字串中(不分大小寫):名稱、備註、帳號、代碼、
+金額(同時放 `1286` 與 `1,286` 兩種寫法)、類別名稱、帳單月份、繳費方式。關鍵字開頭的 `$` 會被忽略。
+
+### CSV `billsToCSV(bills, categoryLabel)`
+
+- 開頭加 UTF-8 BOM、換行用 CRLF:Excel(特別是 Windows 繁中版)直接雙擊開啟才不會亂碼。
+- 欄位含 `"`、`,`、換行時用雙引號包起來,內部 `"` 變 `""`(RFC 4180)。
+- **8 位以上的純數字**(帳號、銷帳編號)輸出成 `="0012…"`:否則 Excel 會轉成科學記號並吃掉開頭的 0。
+- 依帳單月份、截止日排序;欄位:帳單月份、名稱、類別、金額、截止日、狀態、繳費日期、繳費方式、
+  帳單週期、代碼、帳號/銷帳編號、照片數、證明數、備註。
+
+---
+
+## 9. 通知(`src/notify.js`、`sw.js`)
 
 - `urgentReminders()`:`buildReminders` 中 level 不是 info 的。
 - `notifyReminders(registration, { force, background })`:
@@ -442,7 +495,7 @@ for 每個 active && autoPay 的 template:
 
 ---
 
-## 9. 行事曆匯出(`src/ics.js`)
+## 10. 行事曆匯出(`src/ics.js`)
 
 每個啟用中的固定繳費產生兩個重複事件(全天):
 
@@ -456,7 +509,7 @@ for 每個 active && autoPay 的 template:
 
 ---
 
-## 10. Service worker 與快取(`sw.js`)
+## 11. Service worker 與快取(`sw.js`)
 
 - `install`:把 app shell(HTML/CSS/JS/圖示/zxing)用 `cache: 'reload'` 預先快取,`skipWaiting()`。
 - `activate`:刪掉其他版本的 cache,`clients.claim()`。
@@ -468,13 +521,14 @@ for 每個 active && autoPay 的 template:
 
 ---
 
-## 11. 測試
+## 12. 測試
 
 ### 單元測試(`npm test`)
 
 `node --test tests/*.test.mjs`,不需安裝套件。涵蓋:三段式條碼(民國/西元年、MMDD)、稅單 QR、
 OCR 文字(含 Tesseract 真實輸出的空白、表格、雜訊行、錯字、全形)、日期寬鬆格式、帳號與銀行代碼、
-稅單寬限、跨 OCR 合併、週期、提醒、月統計、ICS、影像增強(用合成像素驗證紙張變白、文字保持深色)。
+稅單寬限、跨 OCR 合併、週期、提醒、自動扣款、月統計、年度統計與同期比較、搜尋、CSV 跳脫、ICS、
+影像增強(用合成像素驗證紙張變白、文字保持深色)。
 
 `tests/fixtures/*.txt` 是真實帳單的 OCR 輸出,姓名、地址、帳號、銷帳編號都換成假的(格式不變)。
 
@@ -493,7 +547,7 @@ OCR 文字(含 Tesseract 真實輸出的空白、表格、雜訊行、錯字、�
 
 ---
 
-## 12. 踩過的坑
+## 13. 踩過的坑
 
 | 問題 | 原因 | 解法 |
 |---|---|---|
@@ -507,11 +561,12 @@ OCR 文字(含 Tesseract 真實輸出的空白、表格、雜訊行、錯字、�
 | 色塊邊緣出現灰框 | 背景估計平滑跨越色塊邊界 | 改用保邊的形態學閉運算(第 6 節) |
 | 測試通知按了沒反應 | 權限狀態不一致時 `showNotification` 失敗被吞掉;manifest 只有 SVG 圖示 | 點擊時重新要求權限並驗證顯示結果;補 PNG 圖示 |
 | 「繼續編輯」後手機返回鍵沒反應 | 攔截 hashchange 時用 replaceState 留下重複的歷史紀錄 | 連結點擊改在 capture 階段、換頁前攔截 |
+| 統計顯示「比去年少」,其實是今年還沒過完 | 拿今年 1–10 月比去年全年 | 改成跟去年同期比較,並在文字上寫出比較的月份(第 8 節) |
 | headless Chromium 的 `Notification.permission` 永遠是 denied | 舊版 headless shell 的限制 | 測試用 `channel: 'chromium'`(新版 headless) |
 
 ---
 
-## 13. 第三方程式碼
+## 14. 第三方程式碼
 
 | 套件 | 版本 | 授權 | 位置 | 更新方式 |
 |---|---|---|---|---|

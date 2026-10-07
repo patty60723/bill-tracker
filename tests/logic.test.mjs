@@ -327,3 +327,64 @@ test('自動扣款:不提醒拿單/繳費,未繳帳單只顯示「自動扣款�
   const r = buildReminders([card], [{ id: 'b', templateId: 'c', period: '2026-10', name: '信用卡', status: 'unpaid', dueDate: '2026-10-20' }], '2026-10-18');
   assert.deepEqual(r.map((x) => [x.kind, x.level]), [['autopay', 'info']]);
 });
+
+test('年度統計:月份、類別、與去年比較', async () => {
+  const { yearStats, billYears } = await import('../src/stats.js');
+  const bills = [
+    { period: '2026-01', amount: 1000, status: 'paid', category: 'power' },
+    { period: '2026-01', amount: 500, status: 'unpaid', category: 'water' },
+    { period: '2026-03', amount: 1500, status: 'paid', category: 'power' },
+    { period: '2025-02', amount: 2000, status: 'paid', category: 'power' },
+    { period: '2026-05', amount: '', status: 'unpaid', category: 'other' },
+  ];
+  const s = yearStats(bills, 2026);
+  assert.equal(s.count, 4);
+  assert.equal(s.total, 3000);
+  assert.equal(s.paid, 2500);
+  assert.equal(s.unpaid, 500);
+  assert.equal(s.monthsWithBills, 3);
+  assert.equal(s.monthlyAvg, 1000);
+  assert.deepEqual(s.byMonth[0], { month: 1, total: 1500, paid: 1000, count: 2 });
+  assert.deepEqual(s.byCategory.map((c) => [c.category, c.total, c.count, c.prevTotal]),
+    [['power', 2500, 2, 2000], ['water', 500, 1, 0], ['other', 0, 1, 0]]);
+  assert.equal(s.prevTotal, 2000);
+  assert.equal(s.change, 0.5);
+  assert.equal(yearStats(bills, 2024).change, null);
+  assert.deepEqual(billYears(bills, 2026), [2026, 2025]);
+  // 今年只到 1 月:跟去年同期(1 月)比,去年 1 月沒有資料 → null;到 2 月就能比
+  assert.equal(yearStats(bills, 2026, 1).change, null);
+  const feb = yearStats(bills, 2026, 2);
+  assert.equal(feb.compareTotal, 1500);
+  assert.equal(feb.prevTotal, 2000);
+  assert.equal(feb.change, -0.25);
+});
+
+test('搜尋:名稱、金額(含千分位)、帳號、類別、多個關鍵字', async () => {
+  const { matchBill } = await import('../src/stats.js');
+  const b = { name: '台電電費', amount: 1286, accountNo: '9876543210', category: 'power', period: '2026-10', notes: '住家' };
+  const label = (c) => ({ power: '電費' }[c]);
+  assert.ok(matchBill(b, '台電', label));
+  assert.ok(matchBill(b, '1286', label));
+  assert.ok(matchBill(b, '1,286', label));
+  assert.ok(matchBill(b, '$1,286', label));
+  assert.ok(matchBill(b, '98765', label));
+  assert.ok(matchBill(b, '電費 住家', label));
+  assert.ok(matchBill(b, '2026-10', label));
+  assert.ok(!matchBill(b, '水費', label));
+  assert.ok(matchBill(b, '   ', label));
+});
+
+test('CSV:BOM、CRLF、跳脫、長數字當文字', async () => {
+  const { billsToCSV } = await import('../src/stats.js');
+  const csv = billsToCSV([
+    { period: '2026-10', name: '管理費, "A棟"', category: 'rent', amount: 4504, dueDate: '2026-10-21', status: 'paid', paidDate: '2026-10-20', accountNo: '0012345678901234', notes: '第一行\n第二行' },
+    { period: '2026-09', name: '電費', category: 'power', amount: 1286, status: 'unpaid' },
+  ], (c) => ({ rent: '房租/管理費', power: '電費' }[c]));
+  assert.ok(csv.startsWith('﻿帳單月份,名稱,類別,金額'));
+  const lines = csv.slice(1).split('\r\n');
+  assert.ok(lines[1].startsWith('2026-09,電費,電費,1286,,未繳'));
+  assert.ok(lines[2].includes('"管理費, ""A棟"""'));
+  assert.ok(lines[2].includes('"=""0012345678901234"""'));
+  assert.ok(csv.includes('"第一行\n第二行"'));
+  assert.ok(csv.endsWith('\r\n'));
+});

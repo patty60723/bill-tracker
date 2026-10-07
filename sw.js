@@ -5,12 +5,12 @@
 //    用 periodicsync 叫醒這裡,有快截止、逾期、該拿繳費單的帳單就跳通知。
 import { notifyReminders, SYNC_TAG } from './src/notify.js';
 
-const CACHE = 'bill-tracker-v19';
+const CACHE = 'bill-tracker-v20';
 const ASSETS = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png',
   'icon-maskable-512.png', 'badge-96.png',
   'src/app.js', 'src/db.js', 'src/dates.js', 'src/parse.js', 'src/schedule.js', 'src/ics.js', 'src/scan.js',
-  'src/notify.js', 'src/livescan.js', 'src/enhance.js', 'src/modal.js', 'vendor/zxing-reader.js', 'vendor/zxing_reader.wasm',
+  'src/notify.js', 'src/livescan.js', 'src/enhance.js', 'src/modal.js', 'src/stats.js', 'vendor/zxing-reader.js', 'vendor/zxing_reader.wasm',
 ];
 
 self.addEventListener('install', (e) => {

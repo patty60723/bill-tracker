@@ -10,6 +10,7 @@ import {
   periodDates, planAutoPay, suggestTemplateDays,
 } from './schedule.js';
 import { buildICS } from './ics.js';
+import { billsToCSV, billYears, matchBill, yearStats } from './stats.js';
 import { compressImage, imageSize, readBarcodes, readText } from './scan.js';
 import {
   notifyReminders, REMINDER_TEXT, sendTestNotification, SYNC_TAG, TEST_TAG,
@@ -31,6 +32,7 @@ export const CATEGORIES = [
   ['loan', '🏦', '貸款'], ['school', '🎓', '學費'], ['other', '🧾', '其他'],
 ];
 const catIcon = (c) => (CATEGORIES.find(([k]) => k === c) || CATEGORIES.at(-1))[1];
+const catLabel = (c) => (CATEGORIES.find(([k]) => k === c) || CATEGORIES.at(-1))[2];
 const PAY_METHODS = ['超商', 'ATM 轉帳', '網路/行動銀行', '信用卡', '行動支付', '郵局/臨櫃', '自動扣繳', '其他'];
 const CYCLES = [[1, '每月'], [2, '每兩個月'], [3, '每季'], [6, '每半年'], [12, '每年']];
 const dayLabel = (d) => (d >= 31 ? '月底' : `${d} 號`);
@@ -153,8 +155,54 @@ function reminderCard(r, bill) {
   </div>`;
 }
 
+// ---------- 新手引導 ----------
+
+// Android Chrome 允許安裝時會發 beforeinstallprompt:先存起來,讓引導卡片可以直接顯示「安裝 app」按鈕
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  if (!location.hash || location.hash === '#/') render();
+});
+window.addEventListener('appinstalled', () => { installPrompt = null; });
+
+const isInstalled = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
+
+function onboardingCard({ hasData }) {
+  const installed = isInstalled();
+  const notifyOn = 'Notification' in window && Notification.permission === 'granted';
+  const step = (done, n, title, body) => `<li class="${done ? 'done' : ''}">
+      <span class="step-mark">${done ? '✓' : n}</span>
+      <div class="grow"><b>${title}</b>${done ? '' : `<div class="step-body">${body}</div>`}</div>
+    </li>`;
+  const installBody = installPrompt
+    ? '<button class="btn small primary" data-install>安裝 app</button><span class="muted small">裝好之後從主畫面的圖示開啟</span>'
+    : isIOS()
+      ? '<span class="small">用 <b>Safari</b> 開啟這個網址 → 點下方「分享」⬆️ → 「加入主畫面」,之後從主畫面的圖示開啟。</span>'
+      : '<span class="small">Chrome 右上角 <b>⋮</b> → 「加到主畫面」或「安裝應用程式」,之後從主畫面的圖示開啟。沒開 app 也能收到提醒。</span>';
+  const notifyBody = !('Notification' in window)
+    ? `<span class="small muted">${isIOS() ? '先完成第 1 步,從主畫面開啟後才能開通知。' : '這個瀏覽器不支援通知,可以改用「設定 → 加到手機行事曆」。'}</span>`
+    : '<button class="btn small primary" data-enable-notify>開啟通知</button><span class="muted small">快截止、逾期、該去拿單時提醒你</span>';
+  const allDone = installed && notifyOn && hasData;
+  return `<section class="card col onboarding">
+    <div class="onboarding-head">
+      <h3>${allDone ? '🎉 都設定好了' : '👋 開始使用'}</h3>
+      <button type="button" class="btn small link-btn" data-dismiss-onboarding>${allDone ? '關閉' : '不用了'}</button>
+    </div>
+    <ol class="steps">
+      ${step(installed, 1, '加到主畫面', installBody)}
+      ${step(notifyOn, 2, '開啟通知', notifyBody)}
+      ${step(hasData, 3, '建立第一筆',
+    '<a class="btn small primary" href="#/template/new">＋ 固定繳費</a><a class="btn small" href="#/bill/new?scan=1">📷 掃帳單</a>'
+    + '<div class="muted small">固定繳費(電費、管理費…)設好到單日和截止日,之後每期都會自動提醒。</div>')}
+    </ol>
+  </section>`;
+}
+
 async function renderHome() {
   const { templates, bills } = await loadAll();
+  const showOnboarding = !(await db.getMeta('onboardingDismissed'));
   const today = todayISO();
   const reminders = buildReminders(templates, bills, today);
   const [y, m] = today.split('-').map(Number);
@@ -166,10 +214,10 @@ async function renderHome() {
       <a class="btn primary big" href="#/bill/new?scan=1">📷 掃描繳費單</a>
       <a class="btn big" href="#/bill/new">＋ 手動新增</a>
     </div>
-    ${notifyBanner(templates.length + bills.length)}
+    ${showOnboarding ? onboardingCard({ hasData: templates.length + bills.length > 0 }) : notifyBanner(templates.length + bills.length)}
     <section>
       <h2>待辦提醒</h2>
-      ${reminders.length ? reminders.map((r) => reminderCard(r, bills.find((b) => b.id === r.billId))).join('') : `<div class="empty">目前沒有要處理的帳單 🎉${templates.length ? '' : '<br><a href="#/template/new">先設定固定繳費</a>,就會自動提醒你拿繳費單、繳費截止。'}</div>`}
+      ${reminders.length ? reminders.map((r) => reminderCard(r, bills.find((b) => b.id === r.billId))).join('') : `<div class="empty">目前沒有要處理的帳單 🎉${templates.length || showOnboarding ? '' : '<br><a href="#/template/new">先設定固定繳費</a>,就會自動提醒你拿繳費單、繳費截止。'}</div>`}
     </section>
     <section>
       <h2>${m} 月帳單 <a class="link" href="#/bills">看全部 ›</a></h2>
@@ -198,53 +246,184 @@ function summaryBlock(s) {
 async function renderBills(params) {
   const { templates, bills } = await loadAll();
   const today = todayISO();
-  const showAll = params.get('month') === 'all';
-  const month = showAll ? today.slice(0, 7) : params.get('month') || today.slice(0, 7);
+  const view = params.get('view') === 'stats' ? 'stats' : params.get('month') === 'all' ? 'all' : 'month';
+  const month = view === 'month' && params.get('month') ? params.get('month') : today.slice(0, 7);
   const filter = params.get('filter') || 'all';
+  const tById = new Map(templates.map((t) => [t.id, t]));
+  const link = (mk, f = filter) => `#/bills?month=${mk}&filter=${f}`;
+
+  $('#view').innerHTML = `
+    <header class="page-head"><h1>繳費紀錄</h1></header>
+    <div class="search-box">
+      <input type="search" id="bill-search" placeholder="🔍 搜尋名稱、金額、帳號、備註…" value="${esc(params.get('q') || '')}" enterkeyhint="search" autocomplete="off">
+    </div>
+    <div class="segmented three">
+      <a class="${view === 'month' ? 'on' : ''}" href="${link(view === 'month' ? month : today.slice(0, 7))}">依月份</a>
+      <a class="${view === 'all' ? 'on' : ''}" href="${link('all')}">所有帳單</a>
+      <a class="${view === 'stats' ? 'on' : ''}" href="#/bills?view=stats">統計</a>
+    </div>
+    <div id="bills-body"></div>
+    <a class="fab" href="#/bill/new?period=${month}" aria-label="新增帳單">＋</a>`;
+
+  const body = $('#bills-body');
+  const drawBody = (q) => {
+    if (q.trim()) body.innerHTML = searchResults(bills, tById, q, today);
+    else if (view === 'stats') body.innerHTML = statsView(bills, Number(params.get('year')) || Number(today.slice(0, 4)));
+    else body.innerHTML = billsListBody({ bills, tById, view, month, filter, link, today });
+  };
+  drawBody(params.get('q') || '');
+
+  // 搜尋:只重畫下面的清單,輸入框不會失去焦點;關鍵字記在網址,返回時還在
+  const search = $('#bill-search');
+  search.addEventListener('input', () => {
+    const q = search.value;
+    const p = new URLSearchParams(params);
+    if (q.trim()) p.set('q', q); else p.delete('q');
+    history.replaceState(null, '', `#/bills?${p}`);
+    currentHash = location.hash;
+    drawBody(q);
+  });
+
+  // 統計長條圖:點一個月份顯示明細
+  body.addEventListener('click', (e) => {
+    const bar = e.target.closest('[data-month-bar]');
+    if (!bar) return;
+    $$('[data-month-bar]', body).forEach((x) => x.classList.toggle('on', x === bar));
+    $('#chart-detail').innerHTML = bar.dataset.detail;
+  });
+  body.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-export]');
+    if (!btn) return;
+    const year = btn.dataset.export;
+    const list = year === 'all' ? bills : bills.filter((b) => b.period?.startsWith(`${year}-`));
+    if (!list.length) return toast('沒有可以匯出的帳單');
+    download(`bills-${year}.csv`, billsToCSV(list, catLabel), 'text/csv');
+  });
+}
+
+function billsListBody({ bills, tById, view, month, filter, link, today }) {
+  const byFilter = (b) => filter === 'all' || (filter === 'paid' ? b.status === 'paid' : b.status !== 'paid');
+  const chips = (target) => `<div class="chips">
+      ${[['all', '全部'], ['unpaid', '未繳'], ['paid', '已繳']].map(([k, label]) => `<a class="chip ${k === filter ? 'on' : ''}" href="${link(target, k)}">${label}</a>`).join('')}
+    </div>`;
+  if (view === 'all') {
+    const list = bills.filter(byFilter);
+    return `${chips('all')}${groupedRows(list, tById, today, (p) => link(p))}`;
+  }
   const { year, month: mo } = parsePeriod(month);
   const prev = addMonths(year, mo, -1);
   const next = addMonths(year, mo, 1);
-  const tById = new Map(templates.map((t) => [t.id, t]));
-  const link = (mk, f) => `#/bills?month=${mk}&filter=${f}`;
-  const byFilter = (b) => filter === 'all' || (filter === 'paid' ? b.status === 'paid' : b.status !== 'paid');
-  const byStatusThenDue = (a, b) => (a.status === 'paid') - (b.status === 'paid') || (a.dueDate || '').localeCompare(b.dueDate || '');
-
-  let body;
-  if (showAll) {
-    // 所有帳單,依帳單月份(新到舊)分組
-    const groups = new Map();
-    for (const b of bills.filter(byFilter).sort((x, y) => y.period.localeCompare(x.period) || byStatusThenDue(x, y))) {
-      if (!groups.has(b.period)) groups.set(b.period, []);
-      groups.get(b.period).push(b);
-    }
-    body = groups.size
-      ? [...groups].map(([p, list]) => `<h2 class="group-head"><a href="${link(p, filter)}">${formatPeriod(p)}</a></h2>
-          ${list.map((b) => billRow(b, tById.get(b.templateId), today)).join('')}`).join('')
-      : '<div class="empty">沒有符合的帳單</div>';
-  } else {
-    const list = bills.filter((b) => b.period === month).filter(byFilter).sort(byStatusThenDue);
-    const elsewhere = bills.filter((b) => b.period !== month).length;
-    body = `${summaryBlock(monthSummary(bills, month))}
-      ${list.length ? list.map((b) => billRow(b, tById.get(b.templateId), today)).join('')
-    : `<div class="empty">這個月沒有帳單${elsewhere ? `<br><a href="${link('all', filter)}">其他月份有 ${elsewhere} 筆,看全部 ›</a>` : ''}</div>`}`;
-  }
-
-  view.innerHTML = `
-    <header class="page-head"><h1>繳費紀錄</h1></header>
-    <div class="segmented">
-      <a class="${showAll ? '' : 'on'}" href="${link(showAll ? today.slice(0, 7) : month, filter)}">依月份</a>
-      <a class="${showAll ? 'on' : ''}" href="${link('all', filter)}">所有帳單(${bills.length})</a>
-    </div>
-    ${showAll ? '' : `<div class="month-nav">
-      <a class="btn small" href="${link(periodKey(prev.year, prev.month), filter)}" aria-label="上個月">‹</a>
+  const list = bills.filter((b) => b.period === month).filter(byFilter).sort(byStatusThenDue);
+  const elsewhere = bills.filter((b) => b.period !== month).length;
+  return `<div class="month-nav">
+      <a class="btn small" href="${link(periodKey(prev.year, prev.month))}" aria-label="上個月">‹</a>
       <strong>${formatPeriod(month)}</strong>
-      <a class="btn small" href="${link(periodKey(next.year, next.month), filter)}" aria-label="下個月">›</a>
-    </div>`}
-    <div class="chips">
-      ${[['all', '全部'], ['unpaid', '未繳'], ['paid', '已繳']].map(([k, label]) => `<a class="chip ${k === filter ? 'on' : ''}" href="${link(showAll ? 'all' : month, k)}">${label}</a>`).join('')}
+      <a class="btn small" href="${link(periodKey(next.year, next.month))}" aria-label="下個月">›</a>
     </div>
-    ${body}
-    <a class="fab" href="#/bill/new?period=${month}" aria-label="新增帳單">＋</a>`;
+    ${summaryBlock(monthSummary(bills, month))}
+    ${chips(month)}
+    ${list.length ? list.map((b) => billRow(b, tById.get(b.templateId), today)).join('')
+    : `<div class="empty">這個月沒有帳單${elsewhere ? `<br><a href="${link('all')}">其他月份有 ${elsewhere} 筆,看全部 ›</a>` : ''}</div>`}`;
+}
+
+const byStatusThenDue = (a, b) => (a.status === 'paid') - (b.status === 'paid') || (a.dueDate || '').localeCompare(b.dueDate || '');
+
+/** 依帳單月份(新到舊)分組的列表。 */
+function groupedRows(list, tById, today, monthHref) {
+  const groups = new Map();
+  for (const b of [...list].sort((x, y) => y.period.localeCompare(x.period) || byStatusThenDue(x, y))) {
+    if (!groups.has(b.period)) groups.set(b.period, []);
+    groups.get(b.period).push(b);
+  }
+  return groups.size
+    ? [...groups].map(([p, rows]) => `<h2 class="group-head"><a href="${monthHref(p)}">${formatPeriod(p)}</a></h2>
+        ${rows.map((b) => billRow(b, tById.get(b.templateId), today)).join('')}`).join('')
+    : '<div class="empty">沒有符合的帳單</div>';
+}
+
+function searchResults(bills, tById, q, today) {
+  const list = bills.filter((b) => matchBill(b, q, catLabel));
+  const sum = list.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+  return `<p class="muted small search-summary">找到 ${list.length} 筆${list.length ? `,合計 ${money(sum)}` : ''}</p>
+    ${list.length ? groupedRows(list, tById, today, (p) => `#/bills?month=${p}`) : '<div class="empty">找不到符合的帳單<br><span class="small">可以搜尋名稱、金額(1286 或 1,286)、帳號、備註、類別、月份(2026-10)</span></div>'}`;
+}
+
+/** 統計頁:年度總覽、12 個月長條圖、類別排行、匯出 CSV。 */
+function statsView(bills, year) {
+  const [thisYear, thisMonth] = todayISO().split('-').map(Number);
+  // 今年還沒過完:跟去年「同期」(1 月到本月)比
+  const s = yearStats(bills, year, year === thisYear ? thisMonth : 12);
+  const sameMonths = s.compareThrough < 12 ? `同期(1–${s.compareThrough} 月)` : '';
+  const years = billYears(bills, thisYear);
+  const hasPrev = years.includes(year - 1) || year - 1 >= Math.min(...years);
+  const hasNext = year < Math.max(...years);
+  const pct = (x) => `${Math.round(Math.abs(x) * 100)}%`;
+  const flat = (x) => Math.round(Math.abs(x) * 100) === 0;
+  const change = s.change == null
+    ? `<span class="muted">去年${sameMonths}沒有紀錄</span>`
+    : flat(s.change) ? `跟去年${sameMonths}差不多`
+      : `比去年${sameMonths}${s.change > 0 ? '多' : '少'} <b>${pct(s.change)}</b> ${s.change > 0 ? '▲' : '▼'}`
+        + `<span class="muted">(今年 ${money(s.compareTotal)}、去年 ${money(s.prevTotal)})</span>`;
+
+  const max = Math.max(...s.byMonth.map((m) => m.total), 0);
+  const peak = s.byMonth.reduce((a, m) => (m.total > a.total ? m : a), s.byMonth[0]);
+  const bars = s.byMonth.map((m) => {
+    const h = max ? Math.max(m.total ? 3 : 0, Math.round((m.total / max) * 100)) : 0;
+    const p = periodKey(year, m.month);
+    const detail = `<b>${m.month} 月</b>:${money(m.total)}${m.count ? `(已繳 ${money(m.paid)},${m.count} 筆)` : ''} <a href="#/bills?month=${p}">看這個月 ›</a>`;
+    return `<button type="button" class="bar-col" data-month-bar data-detail="${esc(detail)}" aria-label="${m.month} 月 ${money(m.total)}">
+        <span class="bar-value">${m === peak && m.total ? money(m.total) : ''}</span>
+        <span class="bar-track"><span class="bar" style="height:${h}%"></span></span>
+        <span class="bar-label">${m.month}</span>
+      </button>`;
+  }).join('');
+
+  const catMax = Math.max(...s.byCategory.map((c) => c.total), 0);
+  const cats = s.byCategory.map((c) => {
+    const share = s.total ? Math.round((c.total / s.total) * 100) : 0;
+    const d = c.prevTotal > 0 ? (c.compareTotal - c.prevTotal) / c.prevTotal : null;
+    const vsPrev = d == null ? '' : flat(d) ? ` · 跟去年${sameMonths}差不多`
+      : ` · 比去年${sameMonths}${d > 0 ? '多' : '少'} ${pct(d)}`;
+    return `<div class="cat-row">
+        <span class="icon">${catIcon(c.category)}</span>
+        <div class="grow">
+          <div class="cat-head"><span>${esc(catLabel(c.category))}</span><b>${money(c.total)}</b></div>
+          <div class="cat-track"><span class="cat-bar" style="width:${catMax ? Math.max(2, (c.total / catMax) * 100) : 0}%"></span></div>
+          <div class="sub">${share}% · ${c.count} 筆${vsPrev}</div>
+        </div>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="month-nav">
+      ${hasPrev ? `<a class="btn small" href="#/bills?view=stats&year=${year - 1}" aria-label="前一年">‹</a>` : '<span class="btn small disabled">‹</span>'}
+      <strong>${year} 年</strong>
+      ${hasNext ? `<a class="btn small" href="#/bills?view=stats&year=${year + 1}" aria-label="下一年">›</a>` : '<span class="btn small disabled">›</span>'}
+    </div>
+    ${s.count ? `
+    <div class="stats">
+      <div><div class="label">全年總額</div><div class="value">${money(s.total)}</div></div>
+      <div><div class="label">已繳</div><div class="value ok">${money(s.paid)}</div></div>
+      <div><div class="label">月平均</div><div class="value">${money(s.monthlyAvg)}</div></div>
+    </div>
+    <p class="yoy small">${change}</p>
+    <section class="card col chart-card">
+      <h3>每月金額</h3>
+      <div class="bar-chart" role="group" aria-label="${year} 年每月繳費金額">${bars}</div>
+      <div id="chart-detail" class="chart-detail small muted">點長條看當月明細</div>
+    </section>
+    <section class="card col">
+      <h3>各類別</h3>
+      ${cats}
+    </section>` : `<div class="empty">${year} 年沒有帳單</div>`}
+    <section class="card col">
+      <h3>匯出 CSV</h3>
+      <p class="muted small">用 Excel、Google 試算表、Numbers 都能直接開啟。</p>
+      <div class="btn-row">
+        <button class="btn" data-export="${year}">匯出 ${year} 年</button>
+        <button class="btn" data-export="all">匯出全部</button>
+      </div>
+    </section>`;
 }
 
 function billRow(b, t, today) {
@@ -962,10 +1141,16 @@ async function renderSettings() {
       <button class="btn primary" id="ics">匯出行事曆提醒 (.ics)</button>
     </section>
     <section class="card col">
+      <h3>👋 新手引導</h3>
+      <p class="muted small">在首頁重新顯示「加到主畫面、開啟通知、建立第一筆」的步驟。</p>
+      <button class="btn" id="show-onboarding">在首頁顯示新手引導</button>
+    </section>
+    <section class="card col">
       <h3>💾 備份</h3>
       <p class="muted small">資料只存在這支手機的瀏覽器裡。換手機或清除瀏覽器資料前,請先匯出備份(包含照片與繳費證明)。${persisted ? '' : '<br>建議按「保護資料」,降低瀏覽器空間不足時自動清掉資料的機會。'}</p>
       <div class="btn-row">
         <button class="btn" id="export">匯出備份</button>
+        <button class="btn" id="export-csv">匯出帳單 CSV</button>
         <label class="btn file-btn">匯入備份<input type="file" id="import" accept="application/json,.json" hidden></label>
         ${persisted ? '<span class="badge ok">資料已受保護</span>' : '<button class="btn" id="persist">保護資料</button>'}
       </div>
@@ -987,6 +1172,15 @@ async function renderSettings() {
     toast(ok ? '已保護資料' : '瀏覽器沒有同意,建議先「加入主畫面」後再試');
     render();
   });
+  $('#show-onboarding').onclick = async () => {
+    await db.setMeta('onboardingDismissed', false);
+    go('#/');
+  };
+  $('#export-csv').onclick = async () => {
+    const { bills } = await loadAll();
+    if (!bills.length) return toast('還沒有帳單');
+    download(`bills-all-${todayISO()}.csv`, billsToCSV(bills, catLabel), 'text/csv');
+  };
   $('#export').onclick = async () => {
     download(`bill-tracker-backup-${todayISO()}.json`, JSON.stringify(await db.exportAll()), 'application/json');
   };
@@ -1169,6 +1363,19 @@ async function render() {
 }
 
 view.addEventListener('click', async (e) => {
+  if (e.target.closest('[data-install]') && installPrompt) {
+    installPrompt.prompt();
+    await installPrompt.userChoice.catch(() => null);
+    installPrompt = null;
+    render();
+    return;
+  }
+  if (e.target.closest('[data-dismiss-onboarding]')) {
+    await db.setMeta('onboardingDismissed', true);
+    toast('之後可以在「設定 → 新手引導」再打開');
+    render();
+    return;
+  }
   if (e.target.closest('[data-enable-notify]')) {
     await enableNotifications();
     render();
