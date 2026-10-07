@@ -1,9 +1,10 @@
 // 掃描繳費單:條碼(zxing-wasm)+ 文字辨識(Tesseract.js),兩者都放在 vendor/,不靠外部 CDN。
 // OCR 的引擎和中英文辨識資料約 12 MB,第一次用到才下載,之後由 service worker 快取、可離線。
 
+import { enhanceDocument } from './enhance.js';
+
 const ZXING_FORMATS = ['Code39', 'Code128', 'Code93', 'ITF', 'QRCode', 'EAN-13'];
 const NATIVE_FORMATS = ['code_39', 'code_128', 'code_93', 'itf', 'qr_code', 'ean_13'];
-import { enhanceDocument } from './enhance.js';
 
 const vendorUrl = (path) => new URL(`../vendor/${path}`, import.meta.url).href;
 
@@ -137,10 +138,6 @@ export async function readBarcodes(file, { isEnough = () => false } = {}) {
   return { texts: [...found], errors: [...new Set(errors)] };
 }
 
-/**
- * OCR。先用自動版面分析(PSM 3);如果 isEnough(text) 說資訊還不夠,再用「零散文字」模式
- * (PSM 11)跑一次——表格式帳單用 PSM 11 讀得比較好。回傳每一次的文字。
- */
 /** 文件增強後的 canvas(去陰影、去色塊底、拉對比),見 enhance.js。 */
 function enhancedCanvas(src) {
   const ctx = src.getContext('2d', { willReadFrequently: true });
