@@ -45,6 +45,29 @@ test('超商三段式條碼:截止日與金額從條碼帶入', async () => {
   await context.close();
 });
 
+test('內建條碼偵測讀錯幾碼時,以 zxing 的結果為準', async () => {
+  const ctx = await openPage(browser, server.url);
+  const { page, context, errors } = ctx;
+  // 模擬 Android 的 BarcodeDetector:第三段讀錯成 9999
+  await page.addInitScript(() => {
+    window.BarcodeDetector = class {
+      static async getSupportedFormats() { return ['code_39']; }
+      async detect() { return [{ rawValue: '1510AB000009999', boundingBox: { x: 120, y: 400, width: 600, height: 140 } }]; }
+    };
+  });
+  await seed(page, server.url);
+  await page.goto(`${server.url}#/bill/new`);
+  await page.waitForSelector('#scan-btn');
+  await pick(page, 'bill.jpg', await barcodeBill(page, ['151031K6A', '1510AB000001234']));
+  await waitScan(page);
+  assert.equal(await value(page, 'amount'), '1234');
+  const detail = await page.textContent('.scan-detail pre');
+  assert.match(detail, /1510AB000009999〔內建〕/);
+  assert.match(detail, /條碼引擎:內建 \d+ 次/);
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
 test('稅單 QR:繳款類別、銷帳編號、金額;截止日往前 3 天,條碼日期寫進備註', async () => {
   const { page, context, errors } = await newBillPage();
   await pick(page, 'tax.jpg', await paperWithImage(page, 'tax-qr.png'));

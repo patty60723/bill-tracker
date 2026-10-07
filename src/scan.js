@@ -153,33 +153,50 @@ function cropCanvas(src, x, y, w, h, scale = 1) {
   return c;
 }
 
-// 超商三段式條碼的樣子:第一段 9 碼、第二段 16 碼、第三段 15 碼
-const TW_SEGMENT = /^\*?[0-9A-Z]{9}\*?$|^\*?[0-9A-Z]{15,16}\*?$/;
+// 可以當「條碼區在這裡」線索的條碼:長度像三段式條碼的一段(讀錯幾碼也算,位置還是對的)
+const SEGMENT_HINT = /^\*?[0-9A-Z]{8,20}\*?$/;
 const UPSCALE = 2;
 const MAX_CROP_DIM = 4096;
+const MAX_ZOOMS = 5; // 最多放大幾欄(一個線索最多 3 欄:靠左、置中、靠右)
 
 /**
- * 三段式條碼是上下疊在同一欄。讀到其中一段時,把那一欄(左右、上下各留一些)切出來放大重掃:
- * 細條碼在手機照片上常常糊成一片,放大後 zxing 比較讀得到。實測同一張帳單,
- * 照片縮小到 40% 整張讀不到任何條碼,這一欄放大 2 倍還是讀得到第一、三段。
+ * 三段式條碼是上下疊在同一欄,各段長度不同(9 / 16 / 15 碼)。讀到其中一段(或讀錯但長度像)時,
+ * 推算整欄的範圍,再切成一條條「只比條碼高一點」的細橫條放大重掃。
+ * 實測(真實帳單照片):整張、大塊裁切都讀不到第三段——同一列左邊的文字和其他條碼會干擾 zxing,
+ * 條碼又矮,大圖上 zxing 掃描的列間距太稀;切成條碼高度 2.5 倍的細條、放大 2 倍就穩定讀到。
+ * u = 換算成 16 碼時的條碼寬度。各段可能靠左、置中或靠右對齊;短的那段(第一段)三種都試。
+ * 回傳要掃的橫條清單(原圖座標)。
  */
-function columnRegion(boxes, W, H) {
-  const x0 = Math.min(...boxes.map((b) => b.x));
-  const x1 = Math.max(...boxes.map((b) => b.x + b.w));
-  const y0 = Math.min(...boxes.map((b) => b.y));
-  const y1 = Math.max(...boxes.map((b) => b.y + b.h));
-  const bw = x1 - x0;
-  const x = Math.max(0, x0 - bw * 0.2);
-  const y = Math.max(0, y0 - bw * 0.8);
-  const w = Math.min(W, x1 + bw * 0.2) - x;
-  const h = Math.min(H, y1 + bw * 0.8) - y;
-  return w > 0 && h > 0 ? { x, y, w, h } : null;
+function columnRows(hit, W, H) {
+  const { box, text } = hit;
+  const len = text.replace(/\*/g, '').length;
+  const u = box.w * Math.max(1, 16 / len);
+  const lefts = len >= 14 ? [box.x - 0.1 * u] : [box.x - 0.1 * u, box.x + box.w / 2 - 0.6 * u, box.x + box.w - 1.1 * u];
+  const rowH = box.h * 2.5;
+  const columns = [];
+  for (const left of lefts) {
+    const x = Math.max(0, left);
+    const w = Math.min(W, left + 1.2 * u) - x;
+    const rows = [];
+    for (let y = Math.max(0, box.y - 0.6 * u); y < Math.min(H, box.y + box.h + 0.6 * u); y += box.h * 1.25) {
+      const h = Math.min(H, y + rowH) - y;
+      if (w > 0 && h > 0) rows.push({ x, y, w, h });
+    }
+    columns.push({ region: { x, y: rows[0]?.y ?? 0, w, h: (rows.at(-1)?.y ?? 0) + rowH - (rows[0]?.y ?? 0) }, rows });
+  }
+  return columns;
 }
+
+const overlaps = (a, b) => {
+  const ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+  const iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  return ix > 0 && iy > 0 && ix * iy > 0.5 * Math.min(a.w * a.h, b.w * b.h);
+};
 
 /**
  * 讀照片裡的條碼:
  * 1. 整張(原解析度)掃一次;
- * 2. 讀到三段式條碼的其中一段、但 isEnough(texts) 還不滿足 → 那一欄放大 2 倍重掃;
+ * 2. 讀到像三段式條碼的一段(讀錯也算)、但 isEnough(texts) 還不滿足 → 那一欄放大 2 倍重掃;
  * 3. 還不夠 → 把照片切成重疊的橫條各掃一次(條碼常在帳單下方,切小一點比較容易對準),
  *    橫條裡讀到新的一段,一樣放大那一欄重掃。
  * @returns {{ texts: string[], errors: string[], engines: string, sources: Object<string, string> }}
@@ -201,37 +218,45 @@ export async function readBarcodes(file, { isEnough = () => false, timings } = {
   const stats = newStats();
   const sources = {};
   const enough = () => isEnough([...found]);
-  /** 掃 canvas(在原圖的 (ox, oy)、縮放 scale),回傳讀到的三段式條碼位置(原圖座標)。 */
+  /** 掃 canvas(在原圖的 (ox, oy)、縮放 scale),回傳可當線索的條碼(位置換回原圖座標)。 */
   const scan = async (c, ox = 0, oy = 0, scale = 1) => {
-    const boxes = [];
+    const hits = [];
     for (const r of await detectBoxes(c, errors, stats)) {
       found.add(r.text);
       (sources[r.text] ??= new Set()).add(ENGINE_NAME[r.engine]);
-      if (r.box && TW_SEGMENT.test(r.text.trim().toUpperCase())) {
-        boxes.push({ x: ox + r.box.x / scale, y: oy + r.box.y / scale, w: r.box.w / scale, h: r.box.h / scale });
+      const text = r.text.trim().toUpperCase();
+      if (r.box && r.box.w > 0 && SEGMENT_HINT.test(text)) {
+        hits.push({ text, box: { x: ox + r.box.x / scale, y: oy + r.box.y / scale, w: r.box.w / scale, h: r.box.h / scale } });
       }
     }
-    return boxes;
+    return hits;
   };
-  const zoomColumn = async (boxes) => {
-    const region = boxes.length && !enough() && columnRegion(boxes, W, H);
-    // 同一塊已經放大掃過就不再掃
-    if (!region || zoomed.some((z) => Math.abs(z.x - region.x) < region.w * 0.2 && Math.abs(z.y - region.y) < region.h * 0.2)) return;
-    zoomed.push(region);
-    const scale = Math.min(UPSCALE, MAX_CROP_DIM / Math.max(region.w, region.h));
-    await scan(cropCanvas(canvas, region.x, region.y, region.w, region.h, scale), region.x, region.y, scale);
-    steps.push('放大條碼區');
+  const zoomColumns = async (hits) => {
+    for (const hit of hits) {
+      if (enough() || zoomed.length >= MAX_ZOOMS) return;
+      for (const { region, rows } of columnRows(hit, W, H)) {
+        // 同一塊已經放大掃過就不再掃
+        if (enough() || !rows.length || zoomed.some((z) => overlaps(z, region))) continue;
+        zoomed.push(region);
+        for (const r of rows) {
+          if (enough()) break;
+          const scale = Math.min(UPSCALE, MAX_CROP_DIM / Math.max(r.w, r.h));
+          await scan(cropCanvas(canvas, r.x, r.y, r.w, r.h, scale), r.x, r.y, scale);
+        }
+      }
+    }
   };
 
-  await zoomColumn(await scan(canvas));
+  await zoomColumns(await scan(canvas));
   const size = Math.round(H / 3);
   let strips = 0;
   for (let y = H - size; y >= 0 && !enough(); y -= Math.round(size / 2)) {
     const scale = Math.min(UPSCALE, MAX_CROP_DIM / W);
-    const boxes = await scan(cropCanvas(canvas, 0, y, W, size, scale), 0, y, scale);
+    const hits = await scan(cropCanvas(canvas, 0, y, W, size, scale), 0, y, scale);
     strips++;
-    await zoomColumn(boxes);
+    await zoomColumns(hits);
   }
+  if (zoomed.length) steps.unshift(`放大 ${zoomed.length} 區`);
   if (strips) steps.push(`${strips} 條`);
   timings?.push({ label: steps.length ? `條碼(整張 + ${steps.join(' + ')})` : '條碼', ms: performance.now() - t0 });
   const sec = (ms) => `${(ms / 1000).toFixed(1)}s`;
@@ -239,8 +264,11 @@ export async function readBarcodes(file, { isEnough = () => false, timings } = {
     stats.native.runs ? `內建 ${stats.native.runs} 次 ${sec(stats.native.ms)} 讀到 ${stats.native.read} 個` : '內建:這個瀏覽器沒有',
     `zxing ${stats.zxing.runs} 次 ${sec(stats.zxing.ms)} 讀到 ${stats.zxing.read} 個${stats.zxing.invalid ? `(另有 ${stats.zxing.invalid} 個無效)` : ''}`,
   ].join(' · ');
+  // zxing 讀到的排前面:內建偵測偶爾會讀錯幾碼(實測把 092057000004504 讀成 0920570004504),
+  // 同一段有兩個版本時 parse 會採用先出現的那個
+  const byZxing = (t) => (sources[t]?.has('zxing') ? 0 : 1);
   return {
-    texts: [...found],
+    texts: [...found].sort((a, b) => byZxing(a) - byZxing(b)),
     errors: [...new Set(errors)],
     engines,
     sources: Object.fromEntries(Object.entries(sources).map(([k, v]) => [k, [...v].join('+')])),
