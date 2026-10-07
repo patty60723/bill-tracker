@@ -273,8 +273,14 @@ function findPayAccount(lines) {
  * 先找關鍵字;找不到截止日關鍵字時,退而求其次猜「近期內最晚的日期」(dueDateGuessed = true)。
  */
 /** 「115 年 09-10 月」這種寫法 → 帳單月份(起始月)與週期。 */
+// 「發票期別 115年07-08月」是發票的期別、不是帳單月份(OCR 常把「票」看成「栗」)。
+// 表頭和數值常被拆成兩行,表頭那行沒有數字時下一行也一起跳過。
+const NOT_PERIOD = /發[票栗]|載具/;
+const periodLines = (lines) => lines.filter((l, i) => !NOT_PERIOD.test(l)
+  && !(i > 0 && NOT_PERIOD.test(lines[i - 1]) && !/\d/.test(lines[i - 1])));
+
 function findPeriodRange(lines) {
-  const m = lines.join('\n').match(/(?<!\d)(\d{3,4})\s*年\s*(\d{1,2})\s*[-~至到]\s*(\d{1,2})\s*月/);
+  const m = periodLines(lines).join('\n').match(/(?<!\d)(\d{3,4})\s*年\s*(\d{1,2})\s*[-~至到]\s*(\d{1,2})\s*月/);
   if (!m) return null;
   const year = normalizeYear(+m[1]);
   const from = +m[2];
@@ -285,12 +291,73 @@ function findPeriodRange(lines) {
   return { period: `${year}-${String(from).padStart(2, '0')}`, cycleMonths: months };
 }
 
+/** 「115 年 09 月 繳費通知單」「繳費月份 115年09月」→ 帳單月份。 */
+function findPeriodMonth(lines) {
+  const text = periodLines(lines).join('\n');
+  const m = text.match(/(?<!\d)(\d{3,4})\s*年\s*(\d{1,2})\s*月\s*份?\s*(?:繳費通知|繳費憑證|繳款通知|帳單|電費|水費|管理費)/)
+    || text.match(/(?:繳費月份|帳單月份|計費月份)\s*[::]?\s*\n?\s*(\d{3,4})\s*年\s*(\d{1,2})\s*月/);
+  if (!m) return null;
+  const year = normalizeYear(+m[1]);
+  return validDate(year, +m[2], 1) ? { period: `${year}-${String(+m[2]).padStart(2, '0')}` } : null;
+}
+
+/**
+ * 計費期間(例如台電「115/07/07 至 115/09/06」)的天數 → 週期。只在帳單上有「計費期間 / 用電期間 / 抄表」
+ * 時才看,避免把稅單的「繳納期間 11/01 至 11/30」當成每月。
+ */
+function findCycleFromRange(lines) {
+  const text = lines.join('\n');
+  if (!/計費期間|用電期間|抄表/.test(text)) return null;
+  const re = /(\d{3,4})\s*[/.-]\s*(\d{1,2})\s*[/.-]\s*(\d{1,2})\s*(?:至|到|~|-)\s*(\d{3,4})\s*[/.-]\s*(\d{1,2})\s*[/.-]\s*(\d{1,2})/;
+  const m = text.match(re);
+  if (!m) return null;
+  const from = validDate(normalizeYear(+m[1]), +m[2], +m[3]);
+  const to = validDate(normalizeYear(+m[4]), +m[5], +m[6]);
+  if (!from || !to) return null;
+  const days = diffDays(from, to);
+  if (days >= 25 && days <= 35) return { cycleMonths: 1 };
+  if (days >= 55 && days <= 66) return { cycleMonths: 2 };
+  return null;
+}
+
+// 從帳單上的機構名稱猜名稱和類別(只在使用者還沒填時帶入)
+const ISSUERS = [
+  [/台灣電力|臺灣電力|台電|AIWAN\s*POWER/i, '台電電費', 'power'],
+  [/自來水/, '水費', 'water'],
+  [/中華電信/, '中華電信', 'telecom'],
+  [/台灣大哥大|臺灣大哥大/, '台灣大哥大', 'telecom'],
+  [/遠傳/, '遠傳電信', 'telecom'],
+  [/天然氣|瓦斯/, '瓦斯費', 'gas'],
+  [/管理委員會|管委會|管理費/, '管理費', 'rent'],
+];
+function findIssuer(lines) {
+  const text = lines.join('\n');
+  const hit = ISSUERS.find(([re]) => re.test(text));
+  return hit ? { issuerName: hit[1], category: hit[2] } : null;
+}
+
+/** 「代收截止日 115/11/06」:超商最後收單日(比繳費期限晚)。 */
+function findCollectCutoff(lines, today) {
+  for (const region of regionsAfter(lines, '代收截止')) {
+    // 取最靠近關鍵字的那個(allDates 是依格式分批找的,不是依位置)
+    const d = allDates(region).filter((x) => near(x.date, today, BARCODE_WINDOW_DAYS)).sort((a, b) => a.index - b.index)[0];
+    if (d) return d.date;
+  }
+  return null;
+}
+
 export function parseBillText(text, today = todayISO()) {
   const lines = normalizeOcrText(text).split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
   const result = {};
   const found = findAmount(lines);
   if (found) Object.assign(result, { amount: found.amount, amountRank: found.rank });
-  Object.assign(result, findPeriodRange(lines));
+  // 帳單標題的「115年09月繳費通知單」最可靠;「115年09-10月」這種範圍另外提供週期
+  const range = findPeriodRange(lines);
+  Object.assign(result, range, findPeriodMonth(lines));
+  if (!result.cycleMonths) Object.assign(result, findCycleFromRange(lines));
+  Object.assign(result, findIssuer(lines));
+  const cutoff = findCollectCutoff(lines, today);
+  if (cutoff) result.collectCutoff = cutoff;
   Object.assign(result, findPayAccount(lines));
   const due = findDueDate(lines, today);
   if (due) {
@@ -330,7 +397,10 @@ export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO()) {
     }
     if (!fromText.accountNo && r.accountNo) fromText.accountNo = r.accountNo;
     if (!fromText.bankCode && r.bankCode && r.accountNo === fromText.accountNo) fromText.bankCode = r.bankCode;
-    if (!fromText.period && r.period) Object.assign(fromText, { period: r.period, cycleMonths: r.cycleMonths });
+    if (!fromText.period && r.period) Object.assign(fromText, { period: r.period });
+    if (!fromText.cycleMonths && r.cycleMonths) fromText.cycleMonths = r.cycleMonths;
+    if (!fromText.issuerName && r.issuerName) Object.assign(fromText, { issuerName: r.issuerName, category: r.category });
+    if (!fromText.collectCutoff && r.collectCutoff) fromText.collectCutoff = r.collectCutoff;
     if (r.dueDate && (!fromText.dueDate || (fromText.dueDateGuessed && !r.dueDateGuessed))) {
       fromText.dueDate = r.dueDate;
       fromText.dueDateGuessed = !!r.dueDateGuessed;
@@ -358,6 +428,7 @@ export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO()) {
     ...fromBarcode,
     source: { amount: amountSource, dueDate: dueSource },
   };
+  if (result.collectCutoff && !(result.dueDate && result.collectCutoff > result.dueDate)) delete result.collectCutoff;
   // 台電等帳單:條碼上的日期是「代收截止日」(超商最後收單日),比帳單上的「繳費期限」晚,
   // 過了繳費期限就開始算遲付費用。截止日改用繳費期限,代收截止日記成 collectCutoff(畫面上寫進備註)。
   if (dueSource === 'barcode' && fromText.dueDate && !fromText.dueDateGuessed && fromText.dueDate < fromBarcode.dueDate

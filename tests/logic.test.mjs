@@ -45,7 +45,9 @@ test('OCR:欄位式(關鍵字與值在同一行,中文字被空白隔開)', () =
 出 帳 日 期 115 年 09 月 28 日
 繳費 截止 日 115 年 10 月 15 日
 本 期 應 繳 總 金 額 899 元`;
-  assert.deepEqual(parse(text), { amount: 899, dueDate: '2026-10-15' });
+  assert.deepEqual(parse(text), {
+    amount: 899, dueDate: '2026-10-15', period: '2026-09', issuerName: '中華電信', category: 'telecom',
+  });
 });
 
 test('OCR:一行式、西元年、最低應繳不能當成應繳金額', () => {
@@ -65,12 +67,14 @@ test('OCR:表格式(值在下一行,同一列還有計費期間)', () => {
 本 期 應 繳 金 額 | 繳費 期 限
 | 115/07/15~115/09/14 | 1,286 | 115/10/27 |
 收費 日 期 115 年 09 月 20 日 _ 抄 表 日 期 115/09/14`;
-  assert.deepEqual(parse(text), { amount: 1286, dueDate: '2026-10-27' });
+  // 計費期間 07/15~09/14 約兩個月 → 雙月
+  assert.deepEqual(parse(text), { amount: 1286, dueDate: '2026-10-27', cycleMonths: 2, issuerName: '水費', category: 'water' });
 });
 
 test('OCR:表頭與數值之間多一行雜訊(真實輸出)', () => {
   const text = `台 灣 自 來 水 公司 水 費 通 知 單\n用 水 地 址 : 臺 北市 中 正 區 某 某 路 一 段 1 號 水 號 :K-12-345678-9\n\n計 費 期 間 本 期 應 繳 金 額 繳費 期 限\n\ni 1\n115/07/15~115/09/14 NT$ 1,286 115/10/27\n\n收費 日 期 115 年 09 月 20 日 _ 抄 表 日 期 115/09/14`;
-  assert.deepEqual(parse(text), { amount: 1286, dueDate: '2026-10-27' });
+  // 計費期間 07/15~09/14 約兩個月 → 雙月
+  assert.deepEqual(parse(text), { amount: 1286, dueDate: '2026-10-27', cycleMonths: 2, issuerName: '水費', category: 'water' });
 });
 
 test('OCR:表格亂掉找不到關鍵字時,猜近期最晚的日期並標記為推測', () => {
@@ -462,4 +466,27 @@ test('台電:千分位看錯、第三段有「-」、條碼日期是代收截止
   assert.equal(r.amount, 2219);
   // 沒寫「代收截止」的帳單照舊用條碼日期
   assert.equal(mergeScan(['151106111', '00000-000002219'], ['繳費期限 115/10/01'], '2026-09-20').dueDate, '2026-11-06');
+});
+
+test('台電截圖:發票期別不是帳單月份;計費期間算週期;機構名稱;代收截止日', () => {
+  const text = `台 灣 電力 公 一 115 年 09 月 繳費 通知 單 (繳費 憑證 )
+繳費 期 限
+115 年 10 月 01 日
+代 收 截止 日
+115 年 11 月 06 日 (假日 不 順延)
+115/07/07 至 115/09/06
+下 次 抄 表 日 / 收 費 日 : 115/11/06 ; 115/11/12
+發 栗 期 別
+115 年 07-08 月
+應 繳 總 金 額 ****2,219 元`;
+  const r = mergeScan([], [text], '2026-09-20');
+  assert.equal(r.period, '2026-09');
+  assert.equal(r.cycleMonths, 2);
+  assert.equal(r.issuerName, '台電電費');
+  assert.equal(r.category, 'power');
+  assert.equal(r.dueDate, '2026-10-01');
+  assert.equal(r.collectCutoff, '2026-11-06');
+  assert.equal(r.amount, 2219);
+  // 稅單的繳納期間(沒有計費期間/抄表字樣)不拿來算週期
+  assert.equal(parseBillText('繳納期間 114/11/01 至 114/11/30', '2025-11-05').cycleMonths, undefined);
 });

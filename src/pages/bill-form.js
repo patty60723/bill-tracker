@@ -373,7 +373,7 @@ export async function renderBillForm(id, params) {
       fill('dueDate', r.dueDate);
       found.push(`截止日 ${formatDate(r.dueDate)}(${r.taxCutoff ? '稅單繳納期間最後一天' : r.collectCutoff ? '帳單上的繳費期限' : via(r.source.dueDate)})`);
       if (r.collectCutoff) {
-        const note = `條碼上的 ${formatDate(r.collectCutoff)} 是代收截止日(超商最後收單日),過了繳費期限可能會加收遲付費用`;
+        const note = `代收截止日是 ${formatDate(r.collectCutoff)}(超商最後收單日),過了繳費期限可能會加收遲付費用`;
         const notes = field('notes');
         if (!notes.value.includes(note)) fill('notes', notes.value ? `${notes.value}\n${note}` : note);
       }
@@ -384,6 +384,12 @@ export async function renderBillForm(id, params) {
         if (!notes.value.includes(note)) fill('notes', notes.value ? `${notes.value}\n${note}` : note);
       }
     } else missing.push('截止日');
+    // 從帳單上的機構名稱猜的名稱/類別:只在還沒填(類別還是「其他」)時帶入
+    if (r.issuerName && !field('name').value.trim()) {
+      fill('name', r.issuerName);
+      found.push(`名稱「${r.issuerName}」`);
+    }
+    if (r.category && field('category').value === 'other') fill('category', r.category);
     if (r.period && /^\d{4}-\d{2}$/.test(r.period)) fill('period', r.period);
     if (r.cycleMonths) fill('cycleMonths', r.cycleMonths);
     let movedPeriod = false;
@@ -405,7 +411,7 @@ export async function renderBillForm(id, params) {
     const lines = [];
     if (found.length) lines.push(`✅ 已帶入:${found.join('、')}`);
     if (r.taxCutoff) lines.push(`🏛️ 稅單:條碼上的 ${formatDate(r.taxCutoff)} 是繳納期間屆滿後 3 日,截止日用 ${formatDate(r.dueDate)}(已寫進備註)。`);
-    if (r.collectCutoff) lines.push(`📅 條碼上的 ${formatDate(r.collectCutoff)} 是代收截止日,截止日用帳單上的繳費期限 ${formatDate(r.dueDate)}(已寫進備註)。`);
+    if (r.collectCutoff) lines.push(`📅 截止日用帳單上的繳費期限 ${formatDate(r.dueDate)};代收截止日 ${formatDate(r.collectCutoff)}(超商最後收單日)已寫進備註。`);
     if (movedPeriod) lines.push(`📅 帳單月份已改成 <b>${formatPeriod(field('period').value)}</b>(跟截止日同月),存檔後會列在那個月份底下;不對的話請直接改。`);
     if (r.source.dueDate === 'guess') lines.push('⚠️ 帳單上沒找到「繳費期限」之類的字,截止日是用帳單上最晚的日期<b>推測</b>的,請一定要核對。');
     if (missing.length) lines.push(`⚠️ 沒辨識出${missing.join('、')},請手動填寫。`);
