@@ -123,5 +123,5 @@ export function billsToCSV(bills, categoryLabel = (c) => c) {
     || (a.dueDate || '').localeCompare(b.dueDate || ''));
   const lines = [CSV_COLUMNS.map(([h]) => h).join(',')];
   for (const b of rows) lines.push(CSV_COLUMNS.map(([, get]) => csvCell(get(b, categoryLabel))).join(','));
-  return `﻿${lines.join('\r\n')}\r\n`;
+  return `\uFEFF${lines.join('\r\n')}\r\n`;
 }

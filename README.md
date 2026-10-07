@@ -93,8 +93,16 @@ iPhone 顯示 Safari 加入主畫面的步驟)→ 開啟通知 → 建立第一�
 
 ```bash
 python3 -m http.server 8000   # 打開 http://localhost:8000/
-npm test                      # 單元測試(node:test,不需安裝任何套件)
+
+npm install                   # 只有開發工具(Playwright、ESLint),app 本身沒有相依套件
+npm run lint                  # ESLint(未定義 / 未使用變數等)
+npm test                      # 單元測試(node:test)
+npx playwright install chromium   # 第一次跑端對端測試前
+npm run test:e2e              # 端對端測試(真的開瀏覽器操作 app)
+npm run test:all              # 全部
 ```
+
+GitHub Actions(`.github/workflows/test.yml`)在每次 push / PR 自動跑 lint、單元與端對端測試。
 
 - 手機上要用相機、通知、「加到主畫面」,網址必須是 **HTTPS**:把整個 repo 放到 GitHub Pages
   (Settings → Pages → `main` / root)、Netlify、Cloudflare Pages 等靜態空間即可。
@@ -108,23 +116,26 @@ npm test                      # 單元測試(node:test,不需安裝任何套件)
 | 檔案 | 內容 |
 |---|---|
 | `index.html`、`style.css` | 頁面骨架、樣式(深淺色模式) |
-| `src/app.js` | 畫面、路由、表單、掃描流程、設定、通知設定 |
+| `src/app.js` | 進入點:註冊頁面、全域點擊動作、啟動流程 |
+| `src/pages/` | 各頁面:`home`、`bills`(紀錄 / 統計 / 搜尋)、`bill-form`(帳單與掃描)、`templates`、`settings` |
+| `src/ui/` | 畫面共用:`dom`(小工具)、`components`(共用片段)、`router`(路由與離開前確認)、`actions`(標記已繳、自動扣款、備份)、`notifications` |
 | `src/db.js` | IndexedDB 存取、備份匯出/匯入 |
 | `src/dates.js` | 本地日期工具(一律用 `YYYY-MM-DD` 字串) |
-| `src/schedule.js` | 固定繳費週期計算、提醒清單、月統計 |
+| `src/schedule.js` | 固定繳費週期、提醒清單、自動扣款、月統計 |
 | `src/parse.js` | 條碼 / 稅單 QR / OCR 文字 → 金額、截止日、帳號、帳單月份 |
 | `src/scan.js` | 讀條碼(BarcodeDetector + zxing-wasm)、OCR(Tesseract.js) |
 | `src/enhance.js` | 文件影像增強(去陰影、去色塊底、拉對比) |
 | `src/livescan.js` | 即時相機掃條碼 |
 | `src/notify.js` | 提醒通知(頁面與 service worker 共用) |
-| `src/ics.js` | 匯出行事曆提醒 |
-| `src/modal.js` | 自製對話框(取代原生 confirm / alert / prompt) |
 | `src/stats.js` | 年度統計、搜尋比對、CSV 匯出 |
 | `src/backup.js` | 備份提醒的判斷、備份檔摘要 |
+| `src/ics.js` | 匯出行事曆提醒 |
+| `src/modal.js` | 自製對話框(取代原生 confirm / alert / prompt) |
 | `sw.js` | Service worker:離線快取、背景定期提醒 |
 | `manifest.webmanifest`、`icon*.png`、`badge-96.png` | PWA 安裝資訊與圖示 |
 | `tests/logic.test.mjs` | 單元測試 |
-| `tests/fixtures/` | 真實帳單的 OCR 輸出(個資與號碼已換成假的),當回歸測試 |
+| `tests/e2e/` | 端對端測試(Playwright):掃描、表單、各功能 |
+| `tests/fixtures/` | 真實帳單的 OCR 輸出(個資與號碼已換成假的)、合成的測試圖片 |
 | `vendor/` | [zxing-wasm](https://github.com/Sec-ant/zxing-wasm) 2.2.4 reader(MIT);`vendor/tesseract/`:[Tesseract.js](https://github.com/naptha/tesseract.js) 5.1.1 + core(Apache-2.0)與 chi_tra / eng 辨識資料(約 12 MB,第一次 OCR 才下載) |
 
 ## 已知限制
@@ -165,9 +176,9 @@ npm test                      # 單元測試(node:test,不需安裝任何套件)
 
 ### 技術債
 
-- [ ] `src/app.js` 約 1,200 行,拆成 pages/(home、bills、bill-form、templates、settings)與
-  components/(帳號欄位、檔案縮圖、提醒卡)。
-- [ ] 端對端測試(Playwright,含假相機影片、通知權限)目前只在開發時手動跑,沒有放進 repo 與 CI。
+- [x] `src/app.js` 拆成 `pages/` 與 `ui/`(進入點剩約 60 行)
+- [x] 端對端測試放進 repo(16 個案例),GitHub Actions 自動跑 lint、單元、端對端測試
+- [ ] `pages/bill-form.js`(約 470 行)還可以再把掃描流程拆出去。
 - [ ] Service worker 以 module 註冊,Firefox 不支援時只會失去離線與背景提醒(app 仍可用),
   可考慮打包成單一 classic script。
 - [ ] OCR 在手機上的實際耗時沒有量測(桌機約 2–6 秒)。

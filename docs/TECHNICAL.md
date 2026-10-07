@@ -7,32 +7,47 @@
 
 ## 1. 架構總覽
 
-- **純前端、零建置**:原生 ES modules(`<script type="module">`),沒有框架、沒有打包工具、沒有 npm 相依
-  (`package.json` 只放 `npm test` 腳本)。部署 = 把 repo 放上任何 HTTPS 靜態空間。
+- **純前端、零建置**:原生 ES modules(`<script type="module">`),沒有框架、沒有打包工具,執行時沒有 npm 相依
+  (`devDependencies` 只有 Playwright 與 ESLint,給測試與 lint 用)。部署 = 把 repo 放上任何 HTTPS 靜態空間。
 - **資料只在本機**:IndexedDB。沒有後端。
 - **PWA**:`manifest.webmanifest` + `sw.js`(service worker,以 `type: 'module'` 註冊)。
 - **第三方程式碼全部 vendor 進 repo**(`vendor/`),執行時不依賴 CDN。
 
 ```
-index.html ── src/app.js ─┬─ db.js ─────────── IndexedDB
-                          ├─ dates.js
-                          ├─ schedule.js ───── 週期 / 提醒 / 統計
-                          ├─ parse.js ──────── 條碼、QR、OCR 文字 → 欄位
-                          ├─ scan.js ───┬───── vendor/zxing-reader.js + .wasm
-                          │             ├───── vendor/tesseract/(OCR,動態載入)
-                          │             └───── enhance.js(影像增強)
-                          ├─ livescan.js ───── 即時相機掃條碼(用 scan.detectCanvas)
-                          ├─ notify.js ─────── 通知(也被 sw.js import)
-                          ├─ ics.js ────────── 行事曆匯出
-                          ├─ stats.js ──────── 年度統計、搜尋、CSV
-                          ├─ backup.js ─────── 備份提醒判斷(也被 notify.js 用)
-                          └─ modal.js ──────── 對話框
-sw.js ── notify.js / schedule.js / db.js(背景提醒)
+index.html ── src/app.js(進入點:註冊頁面、全域點擊動作、啟動)
+                │
+                ├─ pages/  home · bills · bill-form · templates · settings   各頁 render 函式
+                │     │
+                ├─ ui/     router ─── 路由、離開前確認(頁面透過 registerRoutes 註冊,router 不 import 頁面)
+                │          actions ── 讀資料、標記已繳、自動扣款、備份、清理
+                │          notifications ── SW 註冊、權限、背景提醒、測試通知
+                │          components ── 共用畫面片段     dom ── 小工具、提示列
+                │
+                └─ 邏輯與服務(頁面、ui 都可用):
+                   db.js ─────────── IndexedDB
+                   dates.js
+                   schedule.js ───── 週期 / 提醒 / 自動扣款 / 月統計
+                   parse.js ──────── 條碼、QR、OCR 文字 → 欄位
+                   scan.js ───┬───── vendor/zxing-reader.js + .wasm
+                              ├───── vendor/tesseract/(OCR,動態載入)
+                              └───── enhance.js(影像增強)
+                   livescan.js ───── 即時相機掃條碼(用 scan.detectCanvas)
+                   notify.js ─────── 通知(也被 sw.js import)
+                   stats.js ──────── 年度統計、搜尋、CSV
+                   backup.js ─────── 備份提醒判斷(也被 notify.js 用)
+                   ics.js ────────── 行事曆匯出
+                   modal.js ──────── 對話框
+sw.js ── notify.js / schedule.js / db.js / backup.js(背景提醒)
 ```
 
-**模組邊界**:`dates / schedule / parse / ics / enhance / stats / backup` 是純函式、不碰 DOM,可以直接在 node 測試;
-`db / notify` 只用 IndexedDB 與 Notification API,可在 service worker 內執行;
-其餘(`app / scan / livescan / modal`)才碰 DOM。
+**模組邊界**
+
+- `dates / schedule / parse / ics / enhance / stats / backup`:純函式、不碰 DOM,直接在 node 測試。
+- `db / notify`:只用 IndexedDB 與 Notification API,可在 service worker 內執行。
+- `ui/*`、`pages/*`、`app / scan / livescan / modal`:碰 DOM。
+- **依賴方向**:`app → pages → ui → 邏輯模組`。`ui/router.js` 不 import 任何頁面,頁面由 `app.js`
+  呼叫 `registerRoutes()` 註冊,避免循環相依。跨模組共用的可變狀態(目前網址、縮圖 URL、
+  安裝提示事件)只在各自模組內修改,對外提供函式(`replaceHash()`、`revokeObjectUrls()`、`promptInstall()`)。
 
 **日期一律用本地時區的 `YYYY-MM-DD` 字串**(`dates.js`),比較大小直接用字串比較,
 避免 `Date` 在 UTC 換算時差一天。帳單月份用 `YYYY-MM`。
@@ -82,7 +97,7 @@ bill     = { id, name, templateId, category, period, cycleMonths, amount, dueDat
 `exportAll()` → `{ app: 'bill-tracker', version: 1, exportedAt, templates, bills, files }`,
 檔案的 blob 轉成 data URL。`importAll()` 會先清空三個 store 再寫入(取代,不合併)。
 
-### 備份提醒與存檔(`src/backup.js`、`app.backupNow()`)
+### 備份提醒與存檔(`src/backup.js`、`ui/actions.js` 的 `backupNow()`)
 
 `backupStatus({ lastBackupAt, snoozeUntil, records })`(records = 帳單 + 固定繳費):
 
@@ -107,11 +122,12 @@ bill     = { id, name, templateId, category, period, cycleMonths, amount, dueDat
 
 ---
 
-## 3. 畫面與路由(`src/app.js`)
+## 3. 畫面與路由(`src/app.js`、`src/ui/`、`src/pages/`)
 
 ### Hash router
 
-`location.hash` → `render()` 依路徑分派:
+`location.hash` → `ui/router.js` 的 `render()`,依路徑第一段查 `registerRoutes()` 註冊的表
+(`app.js` 註冊;查不到就是首頁):
 
 | hash | 頁面 |
 |---|---|
@@ -123,7 +139,9 @@ bill     = { id, name, templateId, category, period, cycleMonths, amount, dueDat
 | `#/settings` | 設定 |
 
 每頁都是 `view.innerHTML = 模板字串` 再綁事件;動態文字一律經 `esc()` 轉義。
-每次 render 前會 `URL.revokeObjectURL` 上一頁產生的縮圖 URL。
+每次 render 前會 `revokeObjectUrls()` 釋放上一頁產生的縮圖 URL。
+畫面上的共用動作(標記已繳、複製帳號、立即備份、開啟通知、安裝 app…)用 `data-*` 屬性標記,
+由 `app.js` 在 `#view` 上做一次事件委派處理。
 
 ### 離開前確認(leave guard)
 
@@ -193,7 +211,7 @@ Esc(`cancel` 事件)或點 backdrop(click 的 target 是 dialog 本身)都回傳
                      applyScan():fill() 寫入欄位並記住原值
 ```
 
-### 掃描狀態與多次掃描(`renderBillForm` 內)
+### 掃描狀態與多次掃描(`pages/bill-form.js`)
 
 ```js
 scan = { barcodes: Set, texts: [], errors: [], size,
@@ -434,7 +452,7 @@ Tesseract 內部用**單一全域門檻**二值化,遇到半邊陰影、色塊�
 
 ### 自動扣款 `planAutoPay(templates, bills, today)`
 
-純函式,回傳要做的事,由 `app.runAutoPay()` 寫入資料庫(app 啟動時、儲存固定繳費後、
+純函式,回傳要做的事,由 `ui/actions.js` 的 `runAutoPay()` 寫入資料庫(app 啟動時、儲存固定繳費後、
 從帳單建立固定繳費後各跑一次):
 
 ```
@@ -556,18 +574,48 @@ OCR 文字(含 Tesseract 真實輸出的空白、表格、雜訊行、錯字、�
 
 `tests/fixtures/*.txt` 是真實帳單的 OCR 輸出,姓名、地址、帳號、銷帳編號都換成假的(格式不變)。
 
-### 端對端驗證(開發時手動,未放進 repo)
+### 端對端測試(`npm run test:e2e`,`tests/e2e/`)
 
-用 Playwright + 預裝的 Chromium(`channel: 'chromium'`,即新版 headless):
+`node:test` + Playwright(版本鎖在 1.56.1,配合下載的 Chromium),16 個案例、3 個檔案:
 
-- **合成帳單**:在頁面 canvas 上畫 Code 39(依 `n/w` 窄寬表手刻)、中文字、色塊與陰影,
-  `toDataURL` 後用 `setInputFiles` 餵給檔案欄位。
-- **QR Code**:用 zxing-wasm 的 writer 在 node 產生。
-- **假相機**:把影格轉成 Y4M(RGB → I420 手動換算)後用
-  `--use-fake-device-for-media-stream --use-file-for-fake-video-capture=cam.y4m` 測即時掃描。
-- **OCR 基準**:node 端用 `tesseract.js` + `sharp`,對同一組圖片比較原圖 / 增強後的欄位正確數。
-- **通知**:`context.grantPermissions(['notifications'])`,用 `getNotifications()` 檢查;
-  拒絕路徑用 `addInitScript` 覆寫 `Notification.requestPermission`。
+| 檔案 | 涵蓋 |
+|---|---|
+| `scan.e2e.mjs` | Code 39 照片、稅單 QR(寬限 3 日、備註、帳單月份)、表格式帳單 OCR、色塊底帳單(影像增強)、同一表單掃兩張、假相機即時掃描 |
+| `forms.e2e.mjs` | 四種離開方式的確認(含「繼續編輯」後返回鍵仍有效)、儲存不被攔、重複帳單提醒、刪除、固定繳費表單、所有帳單檢視 |
+| `features.e2e.mjs` | 自動扣款、標記已繳 → 上傳證明 / 復原 / 之後再說、統計與同期比較、搜尋、CSV、備份(提醒、下載、分享含再點一次與取消、延後、匯入摘要、錯誤檔案)、新手引導、測試通知、ICS |
+
+`helpers.mjs` 的作法:
+
+- **靜態伺服器**:node `http` 寫的(不需要 Python),隨機 port,`Cache-Control: no-store`。
+- **固定時鐘**:`page.clock.setFixedTime('2026-10-07T10:00')`,日期相關的斷言(逾期天數、同期比較、
+  自動扣款期別)不會隨真實日期改變;計時器照常運作。
+- **資料種子**:在同源的 `manifest.webmanifest` 頁面上直接寫 IndexedDB,再開 app。
+- **不准出現原生對話框**:任何 `confirm/alert/prompt` 都會被記成錯誤,每個案例最後檢查錯誤清單為空
+  (同時收集 pageerror 與同源 4xx/5xx)。
+- **合成帳單**:在頁面 canvas 上依 `n/w` 窄寬表畫 Code 39;稅單 QR、表格帳單、色塊帳單用
+  `tests/fixtures/images/` 的合成圖片(假號碼)。
+- **假相機**:在頁面 canvas 畫影格、取 RGBA,在 node 端手動換算 I420 寫成 Y4M,用
+  `--use-fake-device-for-media-stream --use-file-for-fake-video-capture=…` 餵給 `getUserMedia`。
+- **通知**:`grantPermissions(['notifications'])` 後用 `getNotifications()` 確認;要測「還沒允許」的流程時,
+  用 `addInitScript` 覆寫 `Notification.permission` 與 `requestPermission`。
+- **分享 / 安裝**:覆寫 `navigator.canShare / share`、手動 dispatch `beforeinstallprompt`。
+
+### Lint(`npm run lint`)
+
+ESLint 9 flat config(`eslint.config.js`),只開 `recommended`(未定義 / 未使用變數、重複宣告…),不管排版。
+
+### CI
+
+`.github/workflows/test.yml`:每次 push / PR 依序跑 lint → 單元測試 → 安裝 Chromium → 端對端測試。
+
+### 其他自動檢查
+
+單元測試裡有一個案例確認 `sw.js` 的離線快取清單包含 `src/` 下所有 JS 檔
+(新增模組忘了加,離線時整個 app 會載入失敗)。
+
+### OCR 基準(開發時手動)
+
+node 端用 `tesseract.js` + `sharp`,對同一組合成困難帳單比較原圖 / 增強後的欄位正確數(見第 6 節)。
 
 ---
 

@@ -418,3 +418,15 @@ test('備份提醒:從沒備份、超過 30 天、改很多筆、延後提醒', 
     { exportedAt: 'x', bills: 2, templates: 1, files: 0 });
   assert.throws(() => describeBackup({ foo: 1 }), /不是/);
 });
+
+test('service worker 的離線快取清單包含所有 src/ 下的 JS 檔', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const root = new URL('..', import.meta.url).pathname;
+  const sw = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
+  const listed = new Set([...sw.matchAll(/'(src\/[^']+)'/g)].map((m) => m[1]));
+  const walk = (dir) => fs.readdirSync(path.join(root, dir), { withFileTypes: true })
+    .flatMap((e) => (e.isDirectory() ? walk(`${dir}/${e.name}`) : e.name.endsWith('.js') ? [`${dir}/${e.name}`] : []));
+  const missing = walk('src').filter((f) => !listed.has(f));
+  assert.deepEqual(missing, [], `sw.js 的 ASSETS 少了:${missing.join(', ')}`);
+});

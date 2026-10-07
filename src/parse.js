@@ -121,13 +121,13 @@ export function normalizeOcrText(text) {
     .normalize('NFKC')
     .replace(/〇/g, '0')
     .replace(new RegExp(`([${CJK}])[ \\t]+(?=[${CJK}])`, 'g'), '$1')
-    .replace(/(?<=\d)[Oo](?=[\d/.\-])|(?<=[\d/.\-])[Oo](?=\d)/g, '0')
-    .replace(/(?<=\d)[lI](?=[\d/.\-])|(?<=[\d/.\-])[lI](?=\d)/g, '1');
+    .replace(/(?<=\d)[Oo](?=[\d/.-])|(?<=[\d/.-])[Oo](?=\d)/g, '0')
+    .replace(/(?<=\d)[lI](?=[\d/.-])|(?<=[\d/.-])[lI](?=\d)/g, '1');
 }
 
 // 年份限 3 碼(民國)或 4 碼(西元),避免把「15~115/09/14」之類的片段湊成日期
 const DATE_RES = [
-  /(?<!\d)(\d{3,4})\s*[/.\-]\s*(\d{1,2})\s*[/.\-]\s*(\d{1,2})(?!\d)/g,
+  /(?<!\d)(\d{3,4})\s*[/.-]\s*(\d{1,2})\s*[/.-]\s*(\d{1,2})(?!\d)/g,
   /(?<!\d)(\d{3,4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?/g,
 ];
 
@@ -151,7 +151,7 @@ const latest = (dates) => dates.map((d) => d.date).sort().at(-1);
 function looseDates(text, today) {
   const out = [];
   const year = Number(today.slice(0, 4));
-  for (const m of text.matchAll(/(?<![\d/.\-])(\d{1,2})\s*(?:月|[/.])\s*(\d{1,2})\s*日?(?![\d/.\-])/g)) {
+  for (const m of text.matchAll(/(?<![\d/.-])(\d{1,2})\s*(?:月|[/.])\s*(\d{1,2})\s*日?(?![\d/.-])/g)) {
     const options = [year - 1, year, year + 1].map((y) => validDate(y, +m[1], +m[2])).filter(Boolean);
     options.sort((a, b) => Math.abs(diffDays(today, a)) - Math.abs(diffDays(today, b)));
     if (options[0]) out.push({ date: options[0] });
