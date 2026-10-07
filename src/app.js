@@ -239,7 +239,7 @@ async function renderHome() {
     </div>
     ${showOnboarding ? onboardingCard({ hasData: templates.length + bills.length > 0 }) : notifyBanner(templates.length + bills.length)}
     ${backup.due ? backupCard(backup) : ''}
-    <section>
+    <section id="reminders">
       <h2>待辦提醒</h2>
       ${reminders.length ? reminders.map((r) => reminderCard(r, bills.find((b) => b.id === r.billId))).join('') : `<div class="empty">目前沒有要處理的帳單 🎉${templates.length || showOnboarding ? '' : '<br><a href="#/template/new">先設定固定繳費</a>,就會自動提醒你拿繳費單、繳費截止。'}</div>`}
     </section>
