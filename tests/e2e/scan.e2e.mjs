@@ -37,6 +37,7 @@ test('超商三段式條碼:截止日與金額從條碼帶入', async () => {
   assert.equal(await value(page, 'amount'), '1234');
   assert.equal(await value(page, 'dueDate'), '2026-10-31');
   assert.equal(await page.$$eval('#bill-files .file', (e) => e.length), 1);
+  assert.match(await page.textContent('.scan-detail pre'), /條碼解讀:第一段\(截止日\)✓ 10\/31 · 第三段\(金額\)✓ \$1,234/);
   assert.deepEqual(errors, []);
   await context.close();
 });
@@ -55,8 +56,8 @@ test('稅單 QR:繳款類別、銷帳編號、金額;截止日往前 3 天,條�
   await context.close();
 });
 
-test('OCR:表格式帳單(增強影像 + 版面模式)', async () => {
-  const { page, context, errors } = await newBillPage();
+test('OCR:表格式帳單(增強影像 + 版面模式);辨識細節可以一鍵複製', async () => {
+  const { page, context, errors } = await newBillPage({ permissions: ['clipboard-read', 'clipboard-write'] });
   await pick(page, 'table.png', fs.readFileSync(path.join(FIXTURES, 'ocr-table.png')), 'image/png');
   const status = await waitScan(page);
   assert.match(status, /文字辨識/);
@@ -65,6 +66,11 @@ test('OCR:表格式帳單(增強影像 + 版面模式)', async () => {
   // 辨識細節列出每個步驟的耗時(用來量手機上的速度)
   const detail = await page.textContent('.scan-detail pre');
   assert.match(detail, /耗時:條碼.*影像增強 [\d.]+s.*文字辨識 #1\(增強・自動版面\) [\d.]+s.*\(共 [\d.]+s\)/);
+  assert.match(detail, /條碼解讀:第一段\(截止日\)✗ 沒讀到/);
+  await page.click('.scan-detail summary');
+  await page.click('[data-copy-detail]');
+  await page.waitForFunction(() => document.querySelector('#toast')?.textContent === '已複製辨識細節');
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), detail);
   assert.deepEqual(errors, []);
   await context.close();
 });

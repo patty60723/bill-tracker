@@ -18,11 +18,11 @@ export const digits = (v) => String(v ?? '').replace(/\D/g, '');
 
 export const accountText = (o) => (o.accountNo ? `${o.bankCode ? `(${o.bankCode}) ` : ''}${o.accountNo}` : '');
 
-export async function copyText(text, label) {
+export async function copyText(text, label, { preview = true } = {}) {
   if (!text) return toast(`還沒有${label}`);
   try {
     await navigator.clipboard.writeText(text);
-    toast(`已複製${label}:${text}`);
+    toast(preview ? `已複製${label}:${text}` : `已複製${label}`);
   } catch {
     copyDialog({ title: `複製${label}`, text });
   }

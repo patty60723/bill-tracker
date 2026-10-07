@@ -205,6 +205,7 @@ dialog.live-scan::backdrop { background: #000; }
 .live-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .scan-detail { margin-top: 6px; }
 .scan-detail summary { color: var(--muted); cursor: pointer; }
+.scan-detail [data-copy-detail] { margin-top: 6px; }
 .scan-detail pre { white-space: pre-wrap; font-size: .78rem; max-height: 240px; overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin: 6px 0 0; }
 
 .files { display: flex; flex-wrap: wrap; gap: 8px; }

@@ -294,6 +294,23 @@ export async function renderBillForm(id, params) {
     const r = parseConvenienceBarcodes(t);
     return !!(r.dueDate && r.amount != null);
   };
+  /** 說明為什麼要跑文字辨識:沒讀到條碼、條碼不完整,還是條碼齊了只是要找帳號。 */
+  function ocrReason(bc, count) {
+    if (bc.taxQr || (bc.dueDate && bc.amount != null)) return '條碼已讀到金額和截止日,再用文字辨識找繳費帳號…';
+    if (!count) return '這張照片沒讀到條碼,改用文字辨識…';
+    const got = [bc.dueDate && '截止日', bc.amount != null && '金額'].filter(Boolean);
+    return got.length
+      ? `條碼只讀到${got.join('、')},用文字辨識補其他欄位…`
+      : `讀到 ${count} 個條碼,但不是超商代收條碼,改用文字辨識…`;
+  }
+  /** 辨識細節裡的條碼解讀:台灣超商三段式條碼各段有沒有讀到。 */
+  function barcodeSummary(bc) {
+    if (bc.taxQr) return '稅單 QR Code ✓';
+    return [
+      `第一段(截止日)${bc.dueDate ? `✓ ${formatDate(bc.dueDate)}` : '✗ 沒讀到'}`,
+      `第三段(金額)${bc.amount != null ? `✓ ${money(bc.amount)}` : '✗ 沒讀到'}`,
+    ].join(' · ');
+  }
   $('#scan-btn').onclick = () => $('#scan-input').click();
   $('#pick-input').onchange = (e) => $('#scan-input').onchange(e);
   $('#scan-input').onchange = async (e) => {
@@ -309,16 +326,17 @@ export async function renderBillForm(id, params) {
     codes.forEach((c) => scan.barcodes.add(c));
     scan.errors.push(...errors);
     let result = mergeScan([...scan.barcodes], scan.texts);
-    // 帳號欄位還空著的話也跑一次文字辨識,看帳單上有沒有寫轉帳帳號
+    // 條碼已經有金額和截止日、只缺帳號時,也跑一次文字辨識,看帳單上有沒有寫轉帳帳號
     if (!scanComplete(result) || !field('accountNo').value) {
-      setStatus('🔤 條碼資訊不完整,改用文字辨識…');
+      const reason = ocrReason(parseConvenienceBarcodes([...scan.barcodes]), codes.length);
+      setStatus(`🔤 ${reason}`);
       try {
         const texts = await readText(file, {
           timings: scan.timings,
           isEnough: (t) => scanComplete(mergeScan([...scan.barcodes], [...scan.texts, ...t])),
-          onProgress: (p) => setStatus(p.loading
-            ? '🔤 載入文字辨識…(第一次需要下載約 12 MB,之後就不用)'
-            : `🔤 文字辨識中…${p.pass > 1 ? '(換個方式再讀一次)' : ''} ${Math.round(p.progress * 100)}%`),
+          onProgress: (p) => setStatus(`🔤 ${reason}<br>${p.loading
+            ? '載入文字辨識…(第一次需要下載約 12 MB,之後就不用)'
+            : `文字辨識中…${p.pass > 1 ? '(換個方式再讀一次)' : ''} ${Math.round(p.progress * 100)}%`}`),
         });
         scan.texts.push(...texts);
         result = mergeScan([...scan.barcodes], scan.texts);
@@ -393,11 +411,15 @@ export async function renderBillForm(id, params) {
       ...(scan.timings?.length ? [`耗時:${scan.timings.map((x) => `${x.label} ${(x.ms / 1000).toFixed(1)}s`).join(' · ')}`
         + `(共 ${(scan.timings.reduce((a, x) => a + x.ms, 0) / 1000).toFixed(1)}s)`] : []),
       ...(scan.size ? [`照片解析度:${scan.size.width}×${scan.size.height}(約 ${Math.round(scan.size.width * scan.size.height / 1e4)} 萬畫素)`] : []),
-      `條碼(${barcodes.length}):${barcodes.length ? barcodes.map(esc).join(' / ') : '沒讀到'}`,
-      ...scan.texts.map((t, i) => `文字辨識 #${i + 1}:\n${esc(t.trim()) || '(空白)'}`),
-      ...(scan.errors.length ? [`錯誤:\n${[...new Set(scan.errors)].map(esc).join('\n')}`] : []),
+      `條碼(${barcodes.length}):${barcodes.length ? barcodes.join(' / ') : '沒讀到'}`,
+      `條碼解讀:${barcodeSummary(parseConvenienceBarcodes(barcodes))}`,
+      ...scan.texts.map((t, i) => `文字辨識 #${i + 1}:\n${t.trim() || '(空白)'}`),
+      ...(scan.errors.length ? [`錯誤:\n${[...new Set(scan.errors)].join('\n')}`] : []),
     ].join('\n\n');
-    setStatus(`${lines.join('<br>')}<details class="scan-detail"><summary>辨識細節</summary><pre>${detail}</pre></details>`);
+    setStatus(`${lines.join('<br>')}<details class="scan-detail"><summary>辨識細節</summary>`
+      + '<button type="button" class="btn small" data-copy-detail>📋 複製辨識細節</button>'
+      + `<pre>${esc(detail)}</pre></details>`);
+    status.querySelector('[data-copy-detail]').onclick = () => copyText(detail, '辨識細節', { preview: false });
   }
   if (params.get('scan') && isNew) $('#scan-input').click();
 
