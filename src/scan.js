@@ -288,7 +288,7 @@ function enhancedCanvas(src) {
 
 /**
  * OCR。依序試:增強後的影像(自動版面)→ 增強後(零散文字模式,表格比較好)→ 原始照片,
- * 每次跑完問 isEnough(texts),夠了就停。回傳每一次的文字。
+ * 每次跑完問 isEnough(texts, layouts),夠了就停。回傳每一次的文字和版面(每一行、每個字的位置)。
  * timings(陣列,可省略):記錄每個步驟花了多久,顯示在「辨識細節」。
  */
 export async function readText(file, { onProgress, isEnough = () => true, timings } = {}) {
@@ -316,17 +316,30 @@ export async function readText(file, { onProgress, isEnough = () => true, timing
   });
   lap('載入文字辨識');
   const texts = [];
+  const layouts = [];
   try {
     for (; pass < passes.length; pass++) {
       const [canvas, psm, label] = passes[pass];
       await worker.setParameters({ tessedit_pageseg_mode: psm });
       const { data } = await worker.recognize(canvas);
       texts.push(data.text);
+      layouts.push(layoutLines(data));
       lap(`文字辨識 #${pass + 1}(${label})`);
-      if (isEnough(texts)) break;
+      if (isEnough(texts, layouts)) break;
     }
   } finally {
     await worker.terminate();
   }
-  return texts;
+  return { texts, layouts };
+}
+
+/**
+ * Tesseract 的版面結果 → 每一行的文字、範圍和每個字(詞)的範圍,給 parse.js 依位置找值用
+ * (例如表格「應繳金額」表頭正下方那一格)。座標是送進 OCR 的那張圖的像素。
+ */
+function layoutLines(data) {
+  const box = (b) => ({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 });
+  return (data.blocks || []).flatMap((b) => b.paragraphs || []).flatMap((p) => p.lines || [])
+    .map((l) => ({ text: l.text, ...box(l.bbox), words: (l.words || []).map((w) => ({ text: w.text, ...box(w.bbox) })) }))
+    .filter((l) => l.words.length);
 }

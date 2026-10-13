@@ -252,7 +252,7 @@ export async function renderBillForm(id, params) {
   // 這個表單目前的掃描結果。同一張帳單的多次掃描(拍照 + 對準條碼掃、正反面)會合併;
   // 掃「另一張」帳單前要先 resetScan(),不然上一張的條碼(例如稅單 QR Code)會一直蓋過新的。
   const newScanState = () => ({
-    barcodes: new Set(), texts: [], errors: [], size: null,
+    barcodes: new Set(), texts: [], layouts: [], errors: [], size: null, // layouts:每次 OCR 的版面(每行、每個字的位置)
     engines: '', sources: {}, // 診斷用:各條碼引擎的次數/耗時、每個條碼是誰讀到的
     photos: [], // 掃描時加進來的照片 id
     before: {}, // 欄位被掃描改寫前的值
@@ -334,21 +334,22 @@ export async function renderBillForm(id, params) {
     scan.engines = engines;
     Object.assign(scan.sources, sources);
     scan.errors.push(...errors);
-    let result = mergeScan([...scan.barcodes], scan.texts);
+    let result = mergeScan([...scan.barcodes], scan.texts, undefined, scan.layouts);
     // 條碼已經有金額和截止日、只缺帳號時,也跑一次文字辨識,看帳單上有沒有寫轉帳帳號
     if (!scanComplete(result) || !field('accountNo').value) {
       const reason = ocrReason(parseConvenienceBarcodes([...scan.barcodes]), codes.length);
       setStatus(`🔤 ${reason}`);
       try {
-        const texts = await readText(file, {
+        const { texts, layouts } = await readText(file, {
           timings: scan.timings,
-          isEnough: (t) => scanComplete(mergeScan([...scan.barcodes], [...scan.texts, ...t])),
+          isEnough: (t, l) => scanComplete(mergeScan([...scan.barcodes], [...scan.texts, ...t], undefined, [...scan.layouts, ...l])),
           onProgress: (p) => setStatus(`🔤 ${reason}<br>${p.loading
             ? '載入文字辨識…(第一次需要下載約 12 MB,之後就不用)'
             : `文字辨識中…${p.pass > 1 ? '(換個方式再讀一次)' : ''} ${Math.round(p.progress * 100)}%`}`),
         });
         scan.texts.push(...texts);
-        result = mergeScan([...scan.barcodes], scan.texts);
+        scan.layouts.push(...layouts);
+        result = mergeScan([...scan.barcodes], scan.texts, undefined, scan.layouts);
       } catch (err) {
         console.warn(err);
         scan.errors.push(`文字辨識:${err?.message || err}`);
@@ -361,7 +362,7 @@ export async function renderBillForm(id, params) {
     const codes = await liveScan({ describe: describeBarcodes, isEnough: barcodesEnough });
     if (!codes) return;
     codes.forEach((c) => scan.barcodes.add(c));
-    applyScan(mergeScan([...scan.barcodes], scan.texts));
+    applyScan(mergeScan([...scan.barcodes], scan.texts, undefined, scan.layouts));
   };
 
   function applyScan(r) {

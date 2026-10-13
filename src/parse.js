@@ -15,6 +15,7 @@ const BARCODE_WINDOW_DAYS = 400; // 條碼日期離今天超過這麼久就當�
 const GUESS_PAST_DAYS = 60; // 沒有關鍵字時,只在這個範圍內猜截止日
 const GUESS_FUTURE_DAYS = 150;
 const MIN_AMOUNT = 10; // 個位數多半是 OCR 雜訊,不會是帳單金額
+const MAX_AMOUNT = 9999999; // 超過就是電號、帳號之類的號碼(例如台電公共設施表的 01811619019)
 
 const near = (date, today, days) => Math.abs(diffDays(today, date)) <= days;
 
@@ -184,13 +185,70 @@ function regionsAfter(lines, keyword, skip) {
   return regions;
 }
 
+// ---------- 依位置找值(Tesseract 的版面:每一行、每個字的範圍) ----------
+
+/** 一行的字串接起來(去掉空白),記下每個字在字串裡的位置,才能把關鍵字對回照片上的範圍。 */
+function compactLine(line) {
+  let text = '';
+  const spans = [];
+  for (const w of line.words) {
+    const t = normalizeOcrText(w.text).replace(/\s+/g, '');
+    spans.push({ from: text.length, to: text.length + t.length, word: w });
+    text += t;
+  }
+  return { text, spans };
+}
+
+/**
+ * 跟 regionsAfter 一樣找「關鍵字後面的值」,但依照片上的位置:
+ * 同一行關鍵字右邊的字 + 正下方(3 行內)跟關鍵字同一欄的字(左右各放寬關鍵字寬度的 30%)。
+ * 表格「表頭一列、數值一列」時,只會拿到自己那一欄,不會混到隔壁欄(例如台電的電號、管理費的說明欄)。
+ */
+function layoutRegions(layout, keyword, skip, { notList = false } = {}) {
+  const re = typeof keyword === 'string' ? new RegExp(escapeRe(keyword)) : keyword;
+  const lines = [...layout].sort((a, b) => a.y0 - b.y0);
+  const regions = [];
+  for (const line of lines) {
+    const { text, spans } = compactLine(line);
+    const m = text.match(re);
+    if (!m || skip?.test(text)) continue;
+    const end = m.index + m[0].length;
+    const kw = spans.filter((s) => s.to > m.index && s.from < end).map((s) => s.word);
+    const after = spans.filter((s) => s.from >= end).map((s) => s.word);
+    const x0 = Math.min(...kw.map((w) => w.x0));
+    const x1 = Math.max(...kw.map((w) => w.x1));
+    const h = Math.max(1, line.y1 - line.y0);
+    const pad = Math.max((x1 - x0) * 0.3, h);
+    const below = lines
+      .filter((l) => l !== line && l.y0 > line.y0 + h * 0.5 && l.y0 < line.y1 + h * 3.5)
+      .map((l) => l.words.filter((w) => w.x1 > x0 - pad && w.x0 < x1 + pad))
+      .filter((ws) => ws.length)
+      .slice(0, 2);
+    // 找金額時:關鍵字右邊沒有數字、正下方同一欄卻連續兩行都是數字 → 這是明細表的表頭
+    // (管理費單「應繳費用」底下是 3,304 / 1,000 / 200),不是總額
+    const hasNumber = (ws) => ws.some((w) => /\d{2,}/.test(w.text));
+    if (notList && !hasNumber(after) && below.length === 2 && below.every(hasNumber)) continue;
+    regions.push(normalizeOcrText([after, ...below].map((ws) => ws.map((w) => w.text).join(' ')).join(' \n ')));
+  }
+  return regions;
+}
+
 // 截止日關鍵字後面又出現另一個截止日關鍵字(例如台電「繳費期限 10/01 … 代收截止日 11/06」),
 // 後面那段屬於另一個欄位,不算進來
 const ANY_DUE_RE = new RegExp(DUE_KEYWORDS.map(escapeRe).join('|'));
 
-function findDueDate(lines, today) {
+/** 有版面時先用位置找,找不到再用文字的「後面兩行」。 */
+const regionFinder = (lines, layout) => (re, skip, opts) => {
+  if (!layout?.length) return regionsAfter(lines, re, skip);
+  // 有版面時,依位置判斷是明細表頭的就不再用文字的「後面兩行」(文字版分不出欄位,會拿到同一個明細)
+  const fromLayout = layoutRegions(layout, re, skip, opts);
+  const listHeader = opts?.notList && layoutRegions(layout, re, skip).length > fromLayout.length;
+  return [...fromLayout, ...(listHeader ? [] : regionsAfter(lines, re, skip))];
+};
+
+function findDueDate(lines, today, regionsOf = regionFinder(lines)) {
   for (const { re } of DUE_MATCHERS) {
-    for (const full of regionsAfter(lines, re)) {
+    for (const full of regionsOf(re)) {
       const cut = full.search(ANY_DUE_RE);
       const region = cut > 0 ? full.slice(0, cut) : full;
       // 截止日通常是附近日期裡最晚的那個(計費期間、出帳日都比較早)
@@ -209,14 +267,14 @@ function findAmountIn(region) {
   text = text.replace(/(?<![\d.,])(\d{1,3})(?:\s?[,.]){1,2}\s?(?=\d{3}(?![\d.]))/g, '$1,');
   const nums = [...text.matchAll(/(NT\$|NTD|\$|新臺幣|新台幣)?\s*(\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?\s*(元)?/g)]
     .map((m) => ({ value: Number(m[2].replace(/,/g, '')), marked: !!(m[1] || m[3]) }))
-    .filter((n) => n.value >= MIN_AMOUNT);
+    .filter((n) => n.value >= MIN_AMOUNT && n.value <= MAX_AMOUNT);
   return (nums.find((n) => n.marked) || nums[0])?.value ?? null;
 }
 
 /** @returns {{ amount: number, rank: number } | null} rank 越小,找到它的關鍵字越可靠 */
-function findAmount(lines, list = AMOUNT_MATCHERS) {
+function findAmount(lines, list = AMOUNT_MATCHERS, regionsOf = regionFinder(lines)) {
   for (const { re, rank } of list) {
-    for (const region of regionsAfter(lines, re, AMOUNT_SKIP)) {
+    for (const region of regionsOf(re, AMOUNT_SKIP, { notList: true })) {
       const amount = findAmountIn(region);
       if (amount != null) return { amount, rank };
     }
@@ -333,10 +391,14 @@ function findCollectCutoff(lines, today) {
 
 const textLines = (text) => normalizeOcrText(text).split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
 
-export function parseBillText(text, today = todayISO()) {
+/**
+ * layout(可省略):這次 OCR 的版面(scan.js 的 layoutLines),有的話金額和截止日先依位置找。
+ */
+export function parseBillText(text, today = todayISO(), layout = null) {
   const lines = textLines(text);
+  const regionsOf = regionFinder(lines, layout);
   const result = {};
-  const found = findAmount(lines);
+  const found = findAmount(lines, AMOUNT_MATCHERS, regionsOf);
   if (found) Object.assign(result, { amount: found.amount, amountRank: found.rank });
   // 帳單標題的「115年09月繳費通知單」最可靠;「115年09-10月」這種範圍另外提供週期
   const range = findPeriodRange(lines);
@@ -345,7 +407,7 @@ export function parseBillText(text, today = todayISO()) {
   const cutoff = findCollectCutoff(lines, today);
   if (cutoff) result.collectCutoff = cutoff;
   Object.assign(result, findPayAccount(lines));
-  const due = findDueDate(lines, today);
+  const due = findDueDate(lines, today, regionsOf);
   if (due) {
     result.dueDate = due;
   } else {
@@ -365,9 +427,10 @@ export function parseBillText(text, today = todayISO()) {
  * 合併多種來源;條碼比 OCR 可靠,優先採用。
  * ocrTexts 可以是好幾次 OCR 的結果(不同版面分析模式)。
  */
-export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO()) {
+export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO(), layouts = []) {
   const fromBarcode = parseConvenienceBarcodes(barcodeTexts, today);
-  const texts = (Array.isArray(ocrTexts) ? ocrTexts : [ocrTexts]).filter(Boolean).map((t) => parseBillText(t, today));
+  const texts = (Array.isArray(ocrTexts) ? ocrTexts : [ocrTexts])
+    .map((t, i) => (t ? parseBillText(t, today, layouts[i]) : null)).filter(Boolean);
   const fromText = {};
   const rawTexts = (Array.isArray(ocrTexts) ? ocrTexts : [ocrTexts]).filter(Boolean);
   // 好幾次 OCR 都找到金額時,採用「找到它的關鍵字最可靠」的那個;一樣可靠時,採用在帳單上出現最多次的
@@ -415,7 +478,9 @@ export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO()) {
     if (profile.name) fromText.issuerName = profile.name;
     if (!fromText.cycleMonths && profile.cycleMonths) fromText.cycleMonths = profile.cycleMonths;
     if (profile.amountKeywords && fromBarcode.amount == null) {
-      const preferred = rawTexts.map((t) => findAmount(textLines(t), matchers(profile.amountKeywords))).find(Boolean);
+      const preferred = (Array.isArray(ocrTexts) ? ocrTexts : [ocrTexts])
+        .map((t, i) => t && findAmount(textLines(t), matchers(profile.amountKeywords), regionFinder(textLines(t), layouts[i])))
+        .find(Boolean);
       if (preferred && preferred.amount !== fromText.amount) {
         fromText.amount = preferred.amount;
         amountSource = 'ocr';

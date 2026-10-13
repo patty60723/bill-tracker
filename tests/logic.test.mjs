@@ -527,3 +527,41 @@ test('認出固定繳費:帳號 / 代收代號 / 帳單種類;平手或沒把握
   assert.deepEqual(scanHintsFrom({ profile: 'mgmt', collectionCode: '6DA', accountNo: '991', amount: 1 }),
     { profile: 'mgmt', collectionCode: '6DA', accountNo: '991' });
 });
+
+// 版面:每個字給 [文字, x0, x1],同一行同一個 y
+const layoutOf = (rows) => rows.map(([y, words]) => ({
+  text: words.map((w) => w[0]).join(' '), x0: words[0][1], x1: words.at(-1)[2], y0: y, y1: y + 20,
+  words: words.map(([text, x0, x1]) => ({ text, x0, x1, y0: y, y1: y + 20 })),
+}));
+
+test('依位置找值:表頭一列、數值一列時只拿自己那一欄', () => {
+  // 台電:電號 | 繳費期限 | 應繳總金額;數值列的電號 01-81-1629-10-2 不能被當成金額
+  const rows = [
+    [100, [['電號', 60, 120], ['繳費期限', 300, 390], ['應繳總金額', 510, 610]]],
+    [130, [['01-81-1629-10-2', 60, 220], ['115/10/01', 330, 420], ['****2219', 530, 660], ['元', 675, 690]]],
+  ];
+  const text = '電號 繳費期限 應繳總金額\n01-81-1629-10-2 115/10/01 ****2219 元';
+  // 純文字:金額關鍵字後面兩行裡第一個數字是電號的一部分
+  const plain = parseBillText('應繳總金額\n81 1629 115/10/01 2219', '2026-09-20');
+  assert.equal(plain.amount, 81);
+  const r = parseBillText(text, '2026-09-20', layoutOf(rows));
+  assert.equal(r.amount, 2219);
+  assert.equal(r.dueDate, '2026-10-01');
+});
+
+test('依位置找值:表頭底下同一欄連續都是數字 → 明細表頭,不當總額', () => {
+  const rows = [
+    [100, [['項目', 60, 120], ['應繳費用', 300, 380], ['繳費說明', 500, 600]]],
+    [130, [['管理費', 60, 120], ['3,304', 320, 380], ['便利商店', 500, 600]]],
+    [160, [['汽車位', 60, 120], ['1,000', 320, 380], ['證明單', 500, 600]]],
+    [190, [['機車位', 60, 120], ['200', 340, 380]]],
+  ];
+  const text = rows.map(([, ws]) => ws.map((w) => w[0]).join(' ')).join('\n');
+  // 沒有版面時會拿到明細第一項;有版面時寧可留空,讓下一輪 OCR 繼續找(留空才不會提早結束)
+  assert.equal(parseBillText(text, '2026-09-10').amount, 3304);
+  assert.equal(parseBillText(text, '2026-09-10', layoutOf(rows)).amount, undefined);
+  // 有「總計」就用總計
+  const withTotal = [...rows, [230, [['總計', 60, 120], ['$', 300, 310], ['4,504', 320, 380]]]];
+  const t2 = `${text}\n總計 $ 4,504`;
+  assert.equal(parseBillText(t2, '2026-09-10', layoutOf(withTotal)).amount, 4504);
+});
