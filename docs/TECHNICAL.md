@@ -272,6 +272,34 @@ canvas 呼叫 `detectCanvas()`;讀到新條碼就震動、更新清單(✅ 截�
 
 ### OCR(`scan.readText`)
 
+先跑 **PaddleOCR**(`src/paddle.js`),`isEnough` 不成立或載入失敗才跑 Tesseract(下面)。
+每次的文字、版面、用的引擎(`labels`)都留著,辨識細節會標「文字辨識 #1(PaddleOCR・68 個文字框)」。
+
+#### PaddleOCR(`src/paddle.js`)
+
+- PP-OCRv5 mobile 的偵測(4.6 MB)與辨識(16 MB)模型,ONNX 版;字典 18,384 字含繁體。
+  PP-OCRv4 的字典(6,623 字)沒有「繳」「額」,不能用;PP-OCRv6 tiny 也缺字。
+- 執行環境 onnxruntime-web 1.30(WASM,`ort.wasm.min.mjs` + `ort-wasm-simd-threaded.wasm`)。
+- **偵測**:照片長邊縮到 1600(對齊 32),BGR、ImageNet mean/std 正規化 → 機率圖。
+  DB 後處理簡化成:門檻 0.2 二值化 → 4 連通區塊 → 外接矩形,平均機率 < 0.45 丟掉,
+  依「面積 × 1.4 / 周長」往外擴(帳單是平的,不做旋轉框)。
+- **辨識**:每個框從**原圖**裁切,高 48、寬依比例(48–3200,不補白到 320;補白只是變慢),
+  `x/127.5 - 1` 正規化,CTC 貪婪解碼;平均信心 < 0.5 的框(條碼、圖案)丟掉。
+  批次辨識試過,WASM 上沒有變快,維持一次一框。
+- 文字框依垂直重疊(> 一半)排成行,輸出跟 Tesseract 版面一樣的格式給 `parseBillText`。
+  PaddleOCR 常把一整段框成一個字,所以「同一欄」改成「一半以上落在這一欄」才算(5.5.1a)。
+- 偶爾輸出簡體(「缴费」),`normalizeOcrText` 把帳單會用到的簡體字轉回繁體。
+- **多執行緒**:需要 `crossOriginIsolated`,由 service worker 加 COOP/COEP 標頭(第 11 節);
+  第一次開 app(service worker 還沒接手)是單執行緒。
+- 實測(三張真實帳單、只跑一輪,14 個欄位):Tesseract 9、PaddleOCR 14。
+  速度(4 核桌機):管理費 68 框 偵測 0.9 s + 辨識 3.2 s;台電截圖 200 框 0.7 s + 8.5 s。
+  單執行緒約慢 2–3 倍。偵測長邊 1280 會漏小字(13/14),2048 / 2400 沒有更準只是更慢。
+- 已知限制:傾斜照片裡行距很密的小字欄,相鄰兩行可能被框在一起(軸對齊矩形),該欄文字會亂;
+  主要欄位不受影響。
+- 下載:runtime 3.5 MB + 模型 18 MB(gzip 後),第一次用到才下載。
+
+#### Tesseract(備援)
+
 - Tesseract.js 5.1.1,語言 `chi_tra+eng`,OEM 1(LSTM only)。`workerPath`、`corePath`、`langPath`
   全指向 `vendor/tesseract/`(core 有 SIMD 與非 SIMD 兩版,由 tesseract.js 自動挑)。
   辨識資料用 `4.0.0_best_int`(chi_tra 1.6 MB + eng 2.9 MB,gzip)。
@@ -634,7 +662,11 @@ for 每個 active && autoPay 的 template:
 - `install`:把 app shell(HTML/CSS/JS/圖示/zxing)用 `cache: 'reload'` 預先快取,`skipWaiting()`。
 - `activate`:刪掉其他版本的 cache,`clients.claim()`。
 - `fetch`(同源 GET):**network-first**,成功就更新快取,失敗才用快取 → 有網路時永遠是新版,
-  離線時可用。`vendor/tesseract/`(約 12 MB)不預先下載,第一次 OCR 時經由這裡順便快取。
+  離線時可用。`vendor/paddle/`(約 22 MB)、`vendor/tesseract/`(約 12 MB)不預先下載,第一次 OCR 時經由這裡順便快取。
+  - 回應一律加上 `Cross-Origin-Opener-Policy: same-origin`、`Cross-Origin-Embedder-Policy: require-corp`、
+    `Cross-Origin-Resource-Policy: same-origin`(`withIsolation`),頁面變成 `crossOriginIsolated`,
+    onnxruntime-web 才能開多執行緒(SharedArrayBuffer)。GitHub Pages 不能自訂標頭,所以由 service worker 補;
+    app 沒有任何外站資源,require-corp 不會擋到東西。
   - app 檔案用 `cache: 'no-cache'` 抓(每次跟伺服器確認,沒變只回 304)。GitHub Pages 回
     `Cache-Control: max-age=600`,沒加的話推上去後 10 分鐘內手機可能拿到舊檔,甚至新舊模組混用
     (真實案例:測新功能時其實還在跑舊版)。`vendor/` 不會變,照一般 HTTP 快取。
@@ -720,6 +752,9 @@ node 端用 `tesseract.js` + `sharp`,對同一組合成困難帳單比較原圖 
 | 測試通知按了沒反應 | 權限狀態不一致時 `showNotification` 失敗被吞掉;manifest 只有 SVG 圖示 | 點擊時重新要求權限並驗證顯示結果;補 PNG 圖示 |
 | 「繼續編輯」後手機返回鍵沒反應 | 攔截 hashchange 時用 replaceState 留下重複的歷史紀錄 | 連結點擊改在 capture 階段、換頁前攔截 |
 | 統計顯示「比去年少」,其實是今年還沒過完 | 拿今年 1–10 月比去年全年 | 改成跟去年同期比較,並在文字上寫出比較的月份(第 8 節) |
+| PaddleOCR 輸出全是亂碼 / 解析不到任何欄位 | 字典檔是 CRLF,每個字後面多一個 `\r` | 字典用 `/\r?\n/` 切 |
+| PaddleOCR 讀得到金額卻被丟掉 | 一整段文字被框成一個字,只擦到欄位邊也被算進「同一欄」,看起來像明細表 | 字有一半以上落在欄內才算(5.5.1a) |
+| Playwright `page.route` 攔不到模型下載 | 請求是 service worker 發的 | 那個測試用 `serviceWorkers: 'block'` |
 | headless Chromium 的 `Notification.permission` 永遠是 denied | 舊版 headless shell 的限制 | 測試用 `channel: 'chromium'`(新版 headless) |
 
 ---
@@ -732,5 +767,7 @@ node 端用 `tesseract.js` + `sharp`,對同一組合成困難帳單比較原圖 
 | tesseract.js | 5.1.1 | Apache-2.0 | `vendor/tesseract/tesseract.min.js`、`worker.min.js` | 複製 `dist/` 對應檔案 |
 | tesseract.js-core | 5.1.1 | Apache-2.0 | `vendor/tesseract/tesseract-core{,-simd}-lstm.wasm.js` | 複製 LSTM 兩個版本 |
 | 辨識資料 | 4.0.0_best_int | Apache-2.0 | `vendor/tesseract/{chi_tra,eng}.traineddata.gz` | `@tesseract.js-data/<lang>` |
+| onnxruntime-web | 1.30.0 | MIT | `vendor/paddle/ort.wasm.min.mjs`、`ort-wasm-simd-threaded.{mjs,wasm}` | `npm pack onnxruntime-web@x`,複製 `dist/` 這三個檔 |
+| PaddleOCR PP-OCRv5 mobile(ONNX) | onnxocr 4.0.0 | Apache-2.0 | `vendor/paddle/ppocrv5_{det,rec}.onnx`、`ppocrv5_dict.txt` | PyPI `onnxocr` wheel 的 `onnxocr/models/ppocrv5/`(Hugging Face 在開發環境被擋) |
 
 更新後記得把 `src/version.js` 的 `VERSION` 加一,並重跑 `npm test` 與掃描相關的端對端驗證。

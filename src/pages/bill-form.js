@@ -252,7 +252,7 @@ export async function renderBillForm(id, params) {
   // 這個表單目前的掃描結果。同一張帳單的多次掃描(拍照 + 對準條碼掃、正反面)會合併;
   // 掃「另一張」帳單前要先 resetScan(),不然上一張的條碼(例如稅單 QR Code)會一直蓋過新的。
   const newScanState = () => ({
-    barcodes: new Set(), texts: [], layouts: [], errors: [], size: null, // layouts:每次 OCR 的版面(每行、每個字的位置)
+    barcodes: new Set(), texts: [], layouts: [], labels: [], errors: [], size: null, // layouts:每次 OCR 的版面;labels:用的引擎
     engines: '', sources: {}, // 診斷用:各條碼引擎的次數/耗時、每個條碼是誰讀到的
     photos: [], // 掃描時加進來的照片 id
     before: {}, // 欄位被掃描改寫前的值
@@ -300,6 +300,14 @@ export async function renderBillForm(id, params) {
     const r = parseConvenienceBarcodes(t);
     return !!(r.dueDate && r.amount != null);
   };
+  /** 文字辨識的進度文字。 */
+  function ocrProgress(p) {
+    if (p.engine === 'paddle') {
+      return p.loading ? '載入文字辨識…(第一次需要下載約 22 MB,之後就不用)' : `文字辨識中… ${Math.round((p.progress || 0) * 100)}%`;
+    }
+    return p.loading ? '換另一種方式辨識,載入中…(第一次需要下載約 12 MB)'
+      : `換另一種方式再讀一次…${p.pass > 1 ? `(第 ${p.pass} 次)` : ''} ${Math.round((p.progress || 0) * 100)}%`;
+  }
   /** 說明為什麼要跑文字辨識:沒讀到條碼、條碼不完整,還是條碼齊了只是要找帳號。 */
   function ocrReason(bc, count) {
     if (bc.taxQr || (bc.dueDate && bc.amount != null)) return '條碼已讀到金額和截止日,再用文字辨識找繳費帳號…';
@@ -340,15 +348,15 @@ export async function renderBillForm(id, params) {
       const reason = ocrReason(parseConvenienceBarcodes([...scan.barcodes]), codes.length);
       setStatus(`🔤 ${reason}`);
       try {
-        const { texts, layouts } = await readText(file, {
+        const { texts, layouts, labels, errors: ocrErrors } = await readText(file, {
           timings: scan.timings,
           isEnough: (t, l) => scanComplete(mergeScan([...scan.barcodes], [...scan.texts, ...t], undefined, [...scan.layouts, ...l])),
-          onProgress: (p) => setStatus(`🔤 ${reason}<br>${p.loading
-            ? '載入文字辨識…(第一次需要下載約 12 MB,之後就不用)'
-            : `文字辨識中…${p.pass > 1 ? '(換個方式再讀一次)' : ''} ${Math.round(p.progress * 100)}%`}`),
+          onProgress: (p) => setStatus(`🔤 ${reason}<br>${ocrProgress(p)}`),
         });
         scan.texts.push(...texts);
         scan.layouts.push(...layouts);
+        scan.labels.push(...labels);
+        scan.errors.push(...ocrErrors);
         result = mergeScan([...scan.barcodes], scan.texts, undefined, scan.layouts);
       } catch (err) {
         console.warn(err);
@@ -452,7 +460,7 @@ export async function renderBillForm(id, params) {
       ...(scan.engines ? [`條碼引擎:${scan.engines}`] : []),
       `條碼解讀:${barcodeSummary(parseConvenienceBarcodes(barcodes))}`,
       `帳單種類:${r.profileLabel || '沒認出(用通用規則)'}`,
-      ...scan.texts.map((t, i) => `文字辨識 #${i + 1}:\n${t.trim() || '(空白)'}`),
+      ...scan.texts.map((t, i) => `文字辨識 #${i + 1}${scan.labels[i] ? `(${scan.labels[i]})` : ''}:\n${t.trim() || '(空白)'}`),
       ...(scan.errors.length ? [`錯誤:\n${[...new Set(scan.errors)].join('\n')}`] : []),
     ].join('\n\n');
     setStatus(`${lines.join('<br>')}<details class="scan-detail"><summary>辨識細節</summary>`

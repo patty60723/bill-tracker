@@ -22,7 +22,7 @@
   「繳納截止日」是繳納期間屆滿後 3 日,所以截止日自動往前算 3 天(遇假日展延也正確),
   條碼上的日期寫進備註。
 - **文字辨識(OCR,繁中 + 英文)**:找「應繳金額」「繳款截止日」「繳費帳號」「銷帳編號」等,
-  也認得「115 年 09-10 月」→ 9 月、雙月。辨識前先做文件影像增強(去陰影、去色塊底、拉對比)。
+  也認得「115 年 09-10 月」→ 9 月、雙月。引擎用 PaddleOCR(PP-OCRv5,在手機上跑,不上傳),讀不夠時再用 Tesseract(先做文件影像增強)。
 - 都找不到「期限」字樣時,用帳單上近期最晚的日期**推測**截止日並標示「推測」。
 - 掃描結果下方的「**辨識細節**」列出各步驟耗時、照片解析度、讀到的條碼(含三段式條碼各段有沒有讀到、每個條碼是哪個引擎讀到的、各引擎的次數與耗時)與文字、錯誤訊息,有「📋 複製辨識細節」按鈕;照片解析度偏低會提醒。
 - 條碼讀到一段、另外幾段沒讀到時,會把那一欄放大重掃;條碼都沒讀到,也會用文字辨識讀到的「條碼下方數字」補截止日。
@@ -128,7 +128,9 @@ GitHub Actions(`.github/workflows/test.yml`)在每次 push / PR 自動跑 lint�
 | `src/dates.js` | 本地日期工具(一律用 `YYYY-MM-DD` 字串) |
 | `src/schedule.js` | 固定繳費週期、提醒清單、自動扣款、月統計 |
 | `src/parse.js` | 條碼 / 稅單 QR / OCR 文字 → 金額、截止日、帳號、帳單月份 |
-| `src/scan.js` | 讀條碼(BarcodeDetector + zxing-wasm)、OCR(Tesseract.js) |
+| `src/scan.js` | 讀條碼(BarcodeDetector + zxing-wasm)、OCR(先 PaddleOCR,備援 Tesseract.js) |
+| `src/paddle.js` | PaddleOCR(PP-OCRv5)在瀏覽器跑:文字偵測、逐框辨識、排成行 |
+| `src/profiles.js` | 帳單種類規則、認出固定繳費 |
 | `src/enhance.js` | 文件影像增強(去陰影、去色塊底、拉對比) |
 | `src/livescan.js` | 即時相機掃條碼 |
 | `src/notify.js` | 提醒通知(頁面與 service worker 共用) |
@@ -141,12 +143,13 @@ GitHub Actions(`.github/workflows/test.yml`)在每次 push / PR 自動跑 lint�
 | `tests/logic.test.mjs` | 單元測試 |
 | `tests/e2e/` | 端對端測試(Playwright):掃描、表單、各功能 |
 | `tests/fixtures/` | 真實帳單的 OCR 輸出(個資與號碼已換成假的)、合成的測試圖片 |
-| `vendor/` | [zxing-wasm](https://github.com/Sec-ant/zxing-wasm) 2.2.4 reader(MIT);`vendor/tesseract/`:[Tesseract.js](https://github.com/naptha/tesseract.js) 5.1.1 + core(Apache-2.0)與 chi_tra / eng 辨識資料(約 12 MB,第一次 OCR 才下載) |
+| `vendor/` | [zxing-wasm](https://github.com/Sec-ant/zxing-wasm) 2.2.4 reader(MIT);`vendor/tesseract/`:[Tesseract.js](https://github.com/naptha/tesseract.js) 5.1.1 + core(Apache-2.0)與 chi_tra / eng 辨識資料(約 12 MB,備援用);`vendor/paddle/`:onnxruntime-web 1.30(MIT)+ PaddleOCR PP-OCRv5 mobile 模型(Apache-2.0,約 22 MB);都是第一次 OCR 才下載 |
 
 ## 已知限制
 
 - 條碼格式各家不同(郵局劃撥、部分銀行/電信不是三段式),讀不到的就靠 OCR 或手動填。
-- OCR 在拍歪、反光、字很小時容易看錯,所以只用來預填。目前只用 2 張真實帳單驗證過。
+- OCR 在拍歪、反光、字很小時容易看錯,所以只用來預填。目前用 3 張真實帳單(管理費 ×2、台電電子帳單截圖)驗證過。
+- 第一次文字辨識要下載約 22 MB(PaddleOCR 模型),之後離線可用;第一次開 app 時是單執行緒,比較慢。
 - 網頁 app 不能指定「幾點幾分」通知;背景通知只有 Android Chrome 支援。要準時或在 iPhone 上提醒,
   請用匯出的行事曆。
 - 從手機多工畫面直接滑掉 app 時,沒儲存的表單攔不住。
@@ -173,7 +176,8 @@ GitHub Actions(`.github/workflows/test.yml`)在每次 push / PR 自動跑 lint�
 - [x] 稅單截止日:用繳納期間最後一天,條碼日期記在備註
 - [x] 辨識改善第 1 步:依帳單種類套用規則(`src/profiles.js`)、記住同一張帳單(自動選上固定繳費)
 - [x] 辨識改善第 2 步:解析時用上文字的位置(關鍵字右邊 / 正下方同一欄),明細表頭不當總額。
-- [ ] 辨識改善第 3 步:實測 PaddleOCR(onnxruntime-web)跟 Tesseract 比準確度與手機速度,明顯較好才換。
+- [x] 辨識改善第 3 步:改用 PaddleOCR(PP-OCRv5,實測只跑一輪 14/14 vs Tesseract 9/14),Tesseract 留作備援。
+- [ ] PaddleOCR 在手機上的實際速度(辨識細節有每步耗時),必要時改用 WebGPU。
 
 ### P2:之後再說
 

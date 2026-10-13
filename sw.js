@@ -13,7 +13,7 @@ const ASSETS = [
   'icon-maskable-512.png', 'badge-96.png',
   'src/app.js', 'src/backup.js', 'src/dates.js', 'src/db.js', 'src/enhance.js', 'src/ics.js',
   'src/livescan.js', 'src/modal.js', 'src/notify.js', 'src/pages/bill-form.js', 'src/pages/bills.js',
-  'src/pages/home.js', 'src/pages/settings.js', 'src/pages/templates.js', 'src/parse.js', 'src/profiles.js', 'src/scan.js',
+  'src/pages/home.js', 'src/pages/settings.js', 'src/pages/templates.js', 'src/paddle.js', 'src/parse.js', 'src/profiles.js', 'src/scan.js',
   'src/schedule.js', 'src/stats.js', 'src/ui/actions.js', 'src/ui/components.js', 'src/ui/dom.js',
   'src/ui/notifications.js', 'src/ui/router.js', 'src/version.js',
   'vendor/zxing-reader.js', 'vendor/zxing_reader.wasm',
@@ -31,6 +31,17 @@ self.addEventListener('activate', (e) => {
     .then(() => self.clients.claim()));
 });
 
+// 加上 COOP/COEP:頁面變成 crossOriginIsolated,PaddleOCR(onnxruntime-web)才能用多執行緒(實測快 2–3 倍)。
+// GitHub Pages 不能自訂標頭,所以由 service worker 補。app 沒有用任何外站資源,require-corp 不會擋到東西。
+function withIsolation(res) {
+  if (!res || res.type === 'opaque' || res.status === 0) return res;
+  const headers = new Headers(res.headers);
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+  headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
+  headers.set('Cross-Origin-Resource-Policy', 'same-origin');
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
@@ -44,10 +55,10 @@ self.addEventListener('fetch', (e) => {
         ? await fetch(e.request.url, { ...fresh, credentials: 'same-origin' })
         : await fetch(e.request, fresh);
       if (res.ok) cache.put(e.request, res.clone());
-      return res;
+      return withIsolation(res);
     } catch (err) {
       const cached = await cache.match(e.request, { ignoreSearch: true });
-      if (cached) return cached;
+      if (cached) return withIsolation(cached);
       throw err;
     }
   })());

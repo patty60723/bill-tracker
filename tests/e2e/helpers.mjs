@@ -48,9 +48,9 @@ export function launch({ args = [] } = {}) {
  * 開一個頁面:固定時鐘、收集頁面錯誤、偵測原生對話框(app 不該再用 confirm/alert)。
  * @returns {{ page, context, errors: string[] }}
  */
-export async function openPage(browser, base, { scheme = 'light', permissions = [], width = 412 } = {}) {
+export async function openPage(browser, base, { scheme = 'light', permissions = [], width = 412, serviceWorkers = 'allow' } = {}) {
   const context = await browser.newContext({
-    viewport: { width, height: 860 }, deviceScaleFactor: 1, colorScheme: scheme, acceptDownloads: true,
+    viewport: { width, height: 860 }, deviceScaleFactor: 1, colorScheme: scheme, acceptDownloads: true, serviceWorkers,
   });
   if (permissions.length) await context.grantPermissions(permissions, { origin: base });
   const page = await context.newPage();

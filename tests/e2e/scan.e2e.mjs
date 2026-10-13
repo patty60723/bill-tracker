@@ -108,7 +108,7 @@ test('稅單 QR:繳款類別、銷帳編號、金額;截止日往前 3 天,條�
   await context.close();
 });
 
-test('OCR:表格式帳單(增強影像 + 版面模式);辨識細節可以一鍵複製', async () => {
+test('OCR:表格式帳單(PaddleOCR);辨識細節可以一鍵複製', async () => {
   const { page, context, errors } = await newBillPage({ permissions: ['clipboard-read', 'clipboard-write'] });
   await pick(page, 'table.png', fs.readFileSync(path.join(FIXTURES, 'ocr-table.png')), 'image/png');
   const status = await waitScan(page);
@@ -117,7 +117,8 @@ test('OCR:表格式帳單(增強影像 + 版面模式);辨識細節可以一鍵�
   assert.equal(await value(page, 'dueDate'), '2026-10-27');
   // 辨識細節列出每個步驟的耗時(用來量手機上的速度)
   const detail = await page.textContent('.scan-detail pre');
-  assert.match(detail, /耗時:條碼.*影像增強 [\d.]+s.*文字辨識 #1\(增強・自動版面\) [\d.]+s.*\(共 [\d.]+s\)/);
+  assert.match(detail, /耗時:條碼.*載入 PaddleOCR [\d.]+s.*找文字框\(\d+ 個\) [\d.]+s.*辨識文字\(.*執行緒\) [\d.]+s.*\(共 [\d.]+s\)/);
+  assert.match(detail, /文字辨識 #1\(PaddleOCR・\d+ 個文字框\)/);
   assert.match(detail, /條碼解讀:第一段\(截止日\)✗ 沒讀到/);
   await page.click('.scan-detail summary');
   await page.click('[data-copy-detail]');
@@ -127,7 +128,23 @@ test('OCR:表格式帳單(增強影像 + 版面模式);辨識細節可以一鍵�
   await context.close();
 });
 
-test('OCR:色塊底的帳單(影像增強後讀得到金額、截止日、帳號)', async () => {
+test('OCR:PaddleOCR 載入失敗時改用 Tesseract,錯誤列在辨識細節', async () => {
+  // service worker 處理的請求 Playwright 攔不到,這個測試先關掉 service worker
+  const { page, context, errors } = await newBillPage({ serviceWorkers: 'block' });
+  await page.route('**/vendor/paddle/ppocrv5_rec.onnx', (route) => route.abort());
+  await pick(page, 'table.png', fs.readFileSync(path.join(FIXTURES, 'ocr-table.png')), 'image/png');
+  await waitScan(page);
+  assert.equal(await value(page, 'amount'), '1286');
+  assert.equal(await value(page, 'dueDate'), '2026-10-27');
+  const detail = await page.textContent('.scan-detail pre');
+  assert.match(detail, /文字辨識 #1\(Tesseract・增強・自動版面\)/);
+  assert.match(detail, /錯誤:[\s\S]*PaddleOCR:/);
+  // 擋掉的那個請求會被記成網路錯誤,其他不該有錯
+  assert.deepEqual(errors.filter((e) => !/ppocrv5_rec/.test(e)), []);
+  await context.close();
+});
+
+test('OCR:色塊底的帳單(讀得到金額、截止日、帳號)', async () => {
   const { page, context, errors } = await newBillPage();
   await pick(page, 'colorbox.jpg', fs.readFileSync(path.join(FIXTURES, 'colorbox-bill.jpg')));
   await waitScan(page);

@@ -118,9 +118,19 @@ const AMOUNT_MATCHERS = matchers(AMOUNT_KEYWORDS);
 const CJK = '\\u3400-\\u9fff\\uf900-\\ufaff';
 
 /** OCR 常見問題:中文字之間被插空白、全形數字符號、數字裡混了 O/l。 */
+// 帳單關鍵字會用到的簡體字 → 繁體(PaddleOCR 的字典繁簡都有,常把「繳費」讀成「缴费」)
+const SIMPLIFIED = {
+  缴: '繳', 费: '費', 额: '額', 账: '帳', 号: '號', 电: '電', 应: '應', 总: '總', 计: '計', 数: '數', 期: '期',
+  银: '銀', 码: '碼', 单: '單', 户: '戶', 头: '頭', 汇: '匯', 转: '轉', 编: '編', 销: '銷', 纳: '納', 务: '務',
+  别: '別', 资: '資', 讯: '訊', 发: '發', 票: '票', 历: '歷', 当: '當', 欠: '欠', 违: '違', 迟: '遲', 收: '收',
+  价: '價', 种: '種', 类: '類', 间: '間', 区: '區', 业: '業', 网: '網', 湾: '灣',
+};
+const SIMPLIFIED_RE = new RegExp(`[${Object.keys(SIMPLIFIED).filter((k) => k.length === 1 && SIMPLIFIED[k] !== k).join('')}]`, 'g');
+
 export function normalizeOcrText(text) {
   return text
     .normalize('NFKC')
+    .replace(SIMPLIFIED_RE, (c) => SIMPLIFIED[c])
     .replace(/〇/g, '0')
     .replace(new RegExp(`([${CJK}])[ \\t]+(?=[${CJK}])`, 'g'), '$1')
     .replace(/(?<=\d)[Oo](?=[\d/.-])|(?<=[\d/.-])[Oo](?=\d)/g, '0')
@@ -221,7 +231,9 @@ function layoutRegions(layout, keyword, skip, { notList = false } = {}) {
     const pad = Math.max((x1 - x0) * 0.3, h);
     const below = lines
       .filter((l) => l !== line && l.y0 > line.y0 + h * 0.5 && l.y0 < line.y1 + h * 3.5)
-      .map((l) => l.words.filter((w) => w.x1 > x0 - pad && w.x0 < x1 + pad))
+      // 字(框)有一半以上落在這一欄才算:PaddleOCR 常把一整段(例如「收費日期 … 抄表日期 115/09/14」)
+      // 框成一個,只是擦到邊不能算進來
+      .map((l) => l.words.filter((w) => Math.min(w.x1, x1 + pad) - Math.max(w.x0, x0 - pad) > 0.5 * (w.x1 - w.x0)))
       .filter((ws) => ws.length)
       .slice(0, 2);
     // 找金額時:關鍵字右邊沒有數字、正下方同一欄卻連續兩行都是數字 → 這是明細表的表頭

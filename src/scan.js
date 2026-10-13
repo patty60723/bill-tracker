@@ -1,7 +1,8 @@
-// 掃描繳費單:條碼(zxing-wasm)+ 文字辨識(Tesseract.js),兩者都放在 vendor/,不靠外部 CDN。
-// OCR 的引擎和中英文辨識資料約 12 MB,第一次用到才下載,之後由 service worker 快取、可離線。
+// 掃描繳費單:條碼(zxing-wasm)+ 文字辨識(PaddleOCR,備援 Tesseract.js),都放在 vendor/,不靠外部 CDN。
+// OCR 的引擎和模型(PaddleOCR 約 22 MB、Tesseract 約 12 MB)第一次用到才下載,之後由 service worker 快取、可離線。
 
 import { enhanceDocument } from './enhance.js';
+import { paddleOCR } from './paddle.js';
 
 const ZXING_FORMATS = ['Code39', 'Code128', 'Code93', 'ITF', 'QRCode', 'EAN-13'];
 const NATIVE_FORMATS = ['code_39', 'code_128', 'code_93', 'itf', 'qr_code', 'ean_13'];
@@ -287,9 +288,10 @@ function enhancedCanvas(src) {
 }
 
 /**
- * OCR。依序試:增強後的影像(自動版面)→ 增強後(零散文字模式,表格比較好)→ 原始照片,
- * 每次跑完問 isEnough(texts, layouts),夠了就停。回傳每一次的文字和版面(每一行、每個字的位置)。
- * timings(陣列,可省略):記錄每個步驟花了多久,顯示在「辨識細節」。
+ * OCR。先用 PaddleOCR(準、有多執行緒時也快);不夠(isEnough 不成立)或載入失敗,再用 Tesseract
+ * 依序試:增強後的影像(自動版面)→ 增強後(零散文字模式)→ 原始照片。每次跑完問 isEnough(texts, layouts),
+ * 夠了就停。回傳每一次的文字、版面(每一行、每個字的位置)、用的引擎(labels)和錯誤。
+ * onProgress({ engine, loading?, progress?, pass? });timings(可省略):每個步驟花多久,顯示在「辨識細節」。
  */
 export async function readText(file, { onProgress, isEnough = () => true, timings } = {}) {
   let t = performance.now();
@@ -298,6 +300,22 @@ export async function readText(file, { onProgress, isEnough = () => true, timing
     timings?.push({ label, ms: now - t });
     t = now;
   };
+  const texts = [];
+  const layouts = [];
+  const labels = [];
+  const errors = [];
+  try {
+    const r = await paddleOCR(file, { lap, onProgress: (p) => onProgress?.({ engine: 'paddle', ...p }) });
+    texts.push(r.text);
+    layouts.push(r.layout);
+    labels.push(`PaddleOCR・${r.boxes} 個文字框`);
+    if (isEnough(texts, layouts)) return { texts, layouts, labels, errors };
+  } catch (e) {
+    console.warn(e);
+    errors.push(`PaddleOCR:${e?.message || e}`);
+    lap('PaddleOCR 失敗');
+  }
+
   await loadScript(vendorUrl('tesseract/tesseract.min.js'));
   const original = await toCanvas(file, 2200);
   lap('準備照片');
@@ -310,13 +328,11 @@ export async function readText(file, { onProgress, isEnough = () => true, timing
     corePath: vendorUrl('tesseract/'),
     langPath: vendorUrl('tesseract/'),
     logger: (m) => {
-      if (m.status === 'recognizing text') onProgress?.({ pass: pass + 1, total: passes.length, progress: m.progress });
-      else if (/loading|initializ/.test(m.status)) onProgress?.({ loading: true });
+      if (m.status === 'recognizing text') onProgress?.({ engine: 'tesseract', pass: pass + 1, total: passes.length, progress: m.progress });
+      else if (/loading|initializ/.test(m.status)) onProgress?.({ engine: 'tesseract', loading: true });
     },
   });
-  lap('載入文字辨識');
-  const texts = [];
-  const layouts = [];
+  lap('載入 Tesseract');
   try {
     for (; pass < passes.length; pass++) {
       const [canvas, psm, label] = passes[pass];
@@ -324,13 +340,14 @@ export async function readText(file, { onProgress, isEnough = () => true, timing
       const { data } = await worker.recognize(canvas);
       texts.push(data.text);
       layouts.push(layoutLines(data));
-      lap(`文字辨識 #${pass + 1}(${label})`);
+      labels.push(`Tesseract・${label}`);
+      lap(`Tesseract #${pass + 1}(${label})`);
       if (isEnough(texts, layouts)) break;
     }
   } finally {
     await worker.terminate();
   }
-  return { texts, layouts };
+  return { texts, layouts, labels, errors };
 }
 
 /**
