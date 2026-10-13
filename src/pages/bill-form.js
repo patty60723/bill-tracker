@@ -5,6 +5,7 @@ import * as db from '../db.js';
 import { liveScan } from '../livescan.js';
 import { ask, confirmDialog } from '../modal.js';
 import { mergeScan, parseConvenienceBarcodes, scanComplete } from '../parse.js';
+import { matchTemplate, scanHintsFrom } from '../profiles.js';
 import { compressImage, imageSize, readBarcodes, readText } from '../scan.js';
 import { CYCLES as BILL_CYCLES, DEFAULT_REMIND_DAYS, nextPeriod, periodDates, suggestTemplateDays } from '../schedule.js';
 import { loadAll, runAutoPay } from '../ui/actions.js';
@@ -189,6 +190,19 @@ export async function renderBillForm(id, params) {
     return ids;
   }
 
+  /** 選了固定繳費:名稱、類別、週期跟著它;金額、帳號、截止日只補空著的。set 可以換成掃描用的 fill(記得原值)。 */
+  function applyTemplate(t, set = (name, value) => { field(name).value = value; }) {
+    set('name', t.name);
+    set('category', t.category || 'other');
+    set('cycleMonths', t.cycleMonths || 1);
+    if (!field('amount').value && t.amount) set('amount', t.amount);
+    if (!field('accountNo').value && t.accountNo) {
+      set('accountNo', t.accountNo);
+      set('bankCode', t.bankCode || '');
+    }
+    if (!field('dueDate').value && field('period').value) set('dueDate', periodDates(t, field('period').value).due);
+  }
+
   form.addEventListener('change', async (e) => {
     const el = e.target;
     if (el.dataset.add) {
@@ -199,17 +213,7 @@ export async function renderBillForm(id, params) {
       if (el.checked && !form.paidDate.value) form.paidDate.value = todayISO();
     } else if (el.name === 'templateId') {
       $('#save-template').hidden = !!el.value;
-      if (!el.value) return;
-      const t = templates.find((x) => x.id === el.value);
-      field('name').value = t.name;
-      field('category').value = t.category || 'other';
-      field('cycleMonths').value = t.cycleMonths || 1;
-      if (!field('amount').value && t.amount) field('amount').value = t.amount;
-      if (!field('accountNo').value && t.accountNo) {
-        field('accountNo').value = t.accountNo;
-        field('bankCode').value = t.bankCode || '';
-      }
-      if (!field('dueDate').value && field('period').value) field('dueDate').value = periodDates(t, field('period').value).due;
+      if (el.value) applyTemplate(templates.find((x) => x.id === el.value));
     } else if (el.name === 'saveTemplate') {
       $('#tpl-fields').hidden = !el.checked;
       updateTemplateHint();
@@ -272,6 +276,7 @@ export async function renderBillForm(id, params) {
       await db.del('files', fid);
     }
     scan = newScanState();
+    $('#save-template').hidden = !!field('templateId').value;
     status.hidden = true;
     await redrawFiles();
   }
@@ -384,6 +389,17 @@ export async function renderBillForm(id, params) {
         if (!notes.value.includes(note)) fill('notes', notes.value ? `${notes.value}\n${note}` : note);
       }
     } else missing.push('截止日');
+    scan.result = r;
+    // 認得這張帳單(存檔時記下的帳號/代收代號/帳單種類):自動選上那個固定繳費
+    let matched = null;
+    if (!field('templateId').value) {
+      matched = matchTemplate(r, templates);
+      if (matched) {
+        fill('templateId', matched.template.id);
+        $('#save-template').hidden = true;
+        applyTemplate(matched.template, fill);
+      }
+    }
     // 從帳單上的機構名稱猜的名稱/類別:只在還沒填(類別還是「其他」)時帶入
     if (r.issuerName && !field('name').value.trim()) {
       fill('name', r.issuerName);
@@ -391,7 +407,8 @@ export async function renderBillForm(id, params) {
     }
     if (r.category && field('category').value === 'other') fill('category', r.category);
     if (r.period && /^\d{4}-\d{2}$/.test(r.period)) fill('period', r.period);
-    if (r.cycleMonths) fill('cycleMonths', r.cycleMonths);
+    // 有固定繳費時週期以它為準(使用者自己設的)
+    if (r.cycleMonths && !field('templateId').value) fill('cycleMonths', r.cycleMonths);
     let movedPeriod = false;
     // 帳單沒寫月份、截止日又離目前選的月份很遠(例如掃去年的稅單):帳單月份改成截止日那個月
     if (!r.period && r.dueDate && field('period').value) {
@@ -410,6 +427,7 @@ export async function renderBillForm(id, params) {
 
     const lines = [];
     if (found.length) lines.push(`✅ 已帶入:${found.join('、')}`);
+    if (matched) lines.push(`🔁 認出是固定繳費「<b>${esc(matched.template.name)}</b>」(${esc(matched.reason)}),已套用;不對的話在最上面改。`);
     if (r.taxCutoff) lines.push(`🏛️ 稅單:條碼上的 ${formatDate(r.taxCutoff)} 是繳納期間屆滿後 3 日,截止日用 ${formatDate(r.dueDate)}(已寫進備註)。`);
     if (r.collectCutoff) lines.push(`📅 截止日用帳單上的繳費期限 ${formatDate(r.dueDate)};代收截止日 ${formatDate(r.collectCutoff)}(超商最後收單日)已寫進備註。`);
     if (movedPeriod) lines.push(`📅 帳單月份已改成 <b>${formatPeriod(field('period').value)}</b>(跟截止日同月),存檔後會列在那個月份底下;不對的話請直接改。`);
@@ -432,6 +450,7 @@ export async function renderBillForm(id, params) {
       `條碼(${barcodes.length}):${barcodes.length ? barcodes.map((b) => (scan.sources[b] ? `${b}〔${scan.sources[b]}〕` : b)).join(' / ') : '沒讀到'}`,
       ...(scan.engines ? [`條碼引擎:${scan.engines}`] : []),
       `條碼解讀:${barcodeSummary(parseConvenienceBarcodes(barcodes))}`,
+      `帳單種類:${r.profileLabel || '沒認出(用通用規則)'}`,
       ...scan.texts.map((t, i) => `文字辨識 #${i + 1}:\n${t.trim() || '(空白)'}`),
       ...(scan.errors.length ? [`錯誤:\n${[...new Set(scan.errors)].join('\n')}`] : []),
     ].join('\n\n');
@@ -473,11 +492,16 @@ export async function renderBillForm(id, params) {
         ok: '還是新增',
       }))) return;
     let savedTemplate = false;
+    // 掃描過的話,把這張帳單的特徵記到固定繳費上,下次掃到同一張就認得(見 profiles.js matchTemplate)
+    const hints = scan.result ? scanHintsFrom(scan.result) : {};
     if (!updated.templateId && fd.get('saveTemplate') === 'on') {
-      const t = { ...draftTemplate(), createdAt: new Date().toISOString() };
+      const t = { ...draftTemplate(), scanHints: hints, createdAt: new Date().toISOString() };
       await db.put('templates', t);
       updated.templateId = t.id;
       savedTemplate = true;
+    } else if (updated.templateId && Object.keys(hints).length) {
+      const t = await db.get('templates', updated.templateId);
+      if (t) await db.put('templates', { ...t, scanHints: { ...t.scanHints, ...hints } });
     }
     await db.put('bills', updated);
     guard.release();

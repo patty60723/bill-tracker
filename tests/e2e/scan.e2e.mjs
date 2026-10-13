@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  barcodeBill, FIXTURES, fakeCameraVideo, launch, modalClick, openPage, paperWithImage, seed, startServer, waitScan,
+  barcodeBill, dbAll, FIXTURES, fakeCameraVideo, launch, modalClick, openPage, paperWithImage, seed, startServer, waitScan,
 } from './helpers.mjs';
 
 let server;
@@ -64,6 +64,32 @@ test('內建條碼偵測讀錯幾碼時,以 zxing 的結果為準', async () => 
   const detail = await page.textContent('.scan-detail pre');
   assert.match(detail, /1510AB000009999〔內建〕/);
   assert.match(detail, /條碼引擎:內建 \d+ 次/);
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('記住同一張帳單:存成固定繳費時記下特徵,下次掃到自動選上那個固定繳費', async () => {
+  const { page, context, errors } = await newBillPage();
+  const bill = await barcodeBill(page, ['151031K6A', '1510AB000001234']);
+  await pick(page, 'bill.jpg', bill);
+  await waitScan(page);
+  await page.fill('[name=name]', '我家電費');
+  await page.check('[name=saveTemplate]');
+  await page.click('button[type=submit]');
+  await page.waitForSelector('.bill-row');
+  const [tpl] = await dbAll(page, 'templates');
+  assert.equal(tpl.scanHints.collectionCode, 'K6A');
+
+  // 下一期:新增帳單、掃同一種帳單 → 自動選上「我家電費」
+  await page.goto(`${server.url}#/bill/new`);
+  await page.waitForSelector('#scan-btn');
+  await pick(page, 'next.jpg', await barcodeBill(page, ['151130K6A', '1511AB000001500']));
+  await waitScan(page);
+  assert.equal(await value(page, 'templateId'), tpl.id);
+  assert.equal(await value(page, 'name'), '我家電費');
+  assert.equal(await value(page, 'amount'), '1500');
+  assert.match(await page.textContent('#scan-status'), /認出是固定繳費「我家電費」\(同一個條碼代收代號\)/);
+  assert.equal(await page.isHidden('#save-template'), true);
   assert.deepEqual(errors, []);
   await context.close();
 });

@@ -169,7 +169,7 @@ h3 { margin: 0 0 4px; font-size: 1rem; }
 .form .file-btn { align-self: flex-start; flex-direction: row; color: var(--text); font-size: .9rem; }
 .sub-legend { font-size: .9rem; color: var(--muted); }
 #paid-fields, #tpl-fields { display: flex; flex-direction: column; gap: 10px; }
-#paid-fields[hidden], #tpl-fields[hidden] { display: none; }
+[hidden] { display: none !important; } /* 元件自己的 display(例如 .form fieldset 的 flex)不能蓋過 hidden */
 .form-actions { display: flex; gap: 10px; }
 
 .scan-box { display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: var(--radius); background: var(--info-bg); border: 1px solid var(--line); }

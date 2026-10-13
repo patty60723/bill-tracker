@@ -46,7 +46,7 @@ test('OCR:欄位式(關鍵字與值在同一行,中文字被空白隔開)', () =
 繳費 截止 日 115 年 10 月 15 日
 本 期 應 繳 總 金 額 899 元`;
   assert.deepEqual(parse(text), {
-    amount: 899, dueDate: '2026-10-15', period: '2026-09', issuerName: '中華電信', category: 'telecom',
+    amount: 899, dueDate: '2026-10-15', period: '2026-09',
   });
 });
 
@@ -68,13 +68,13 @@ test('OCR:表格式(值在下一行,同一列還有計費期間)', () => {
 | 115/07/15~115/09/14 | 1,286 | 115/10/27 |
 收費 日 期 115 年 09 月 20 日 _ 抄 表 日 期 115/09/14`;
   // 計費期間 07/15~09/14 約兩個月 → 雙月
-  assert.deepEqual(parse(text), { amount: 1286, dueDate: '2026-10-27', cycleMonths: 2, issuerName: '水費', category: 'water' });
+  assert.deepEqual(parse(text), { amount: 1286, dueDate: '2026-10-27', cycleMonths: 2 });
 });
 
 test('OCR:表頭與數值之間多一行雜訊(真實輸出)', () => {
   const text = `台 灣 自 來 水 公司 水 費 通 知 單\n用 水 地 址 : 臺 北市 中 正 區 某 某 路 一 段 1 號 水 號 :K-12-345678-9\n\n計 費 期 間 本 期 應 繳 金 額 繳費 期 限\n\ni 1\n115/07/15~115/09/14 NT$ 1,286 115/10/27\n\n收費 日 期 115 年 09 月 20 日 _ 抄 表 日 期 115/09/14`;
   // 計費期間 07/15~09/14 約兩個月 → 雙月
-  assert.deepEqual(parse(text), { amount: 1286, dueDate: '2026-10-27', cycleMonths: 2, issuerName: '水費', category: 'water' });
+  assert.deepEqual(parse(text), { amount: 1286, dueDate: '2026-10-27', cycleMonths: 2 });
 });
 
 test('OCR:表格亂掉找不到關鍵字時,猜近期最晚的日期並標記為推測', () => {
@@ -489,4 +489,41 @@ test('台電截圖:發票期別不是帳單月份;計費期間算週期;機構�
   assert.equal(r.amount, 2219);
   // 稅單的繳納期間(沒有計費期間/抄表字樣)不拿來算週期
   assert.equal(parseBillText('繳納期間 114/11/01 至 114/11/30', '2025-11-05').cycleMonths, undefined);
+});
+
+test('帳單種類:比對次數最多的勝出;管理費金額優先看「總計」', async () => {
+  const { detectProfile } = await import('../src/profiles.js');
+  assert.equal(detectProfile('台灣電力公司 電號 01-81 應繳總金額').id, 'taipower');
+  // 信用卡帳單裡有一筆台電代繳,還是信用卡
+  assert.equal(detectProfile('信用卡帳單 台電代繳 最低應繳 信用卡').id, 'card');
+  assert.equal(detectProfile('隨便什麼', { taxQr: true }).id, 'tax');
+  assert.equal(detectProfile('沒有任何機構名稱'), null);
+  // 管理費:明細表頭「應繳費用」底下是其中一項 3,304,總額在「總計」
+  const text = '社區管理委員會 115年09-10月管理費\n應繳費用\n3,304\n1,000\n總計 $ 4,504';
+  const r = mergeScan([], [text], '2026-09-10');
+  assert.equal(r.profile, 'mgmt');
+  assert.equal(r.amount, 4504);
+  assert.equal(r.issuerName, '管理費');
+  assert.equal(r.category, 'rent');
+  assert.equal(r.cycleMonths, 2);
+});
+
+test('認出固定繳費:帳號 / 代收代號 / 帳單種類;平手或沒把握時不猜', async () => {
+  const { matchTemplate, scanHintsFrom } = await import('../src/profiles.js');
+  const mgmt = { id: 'm', name: '社區管理費', category: 'rent', scanHints: { collectionCode: '6DA', profile: 'mgmt' } };
+  const power = { id: 'p', name: '電費', category: 'power', scanHints: { profile: 'taipower' } };
+  const water = { id: 'w', name: '水費', category: 'water' }; // 舊的固定繳費,沒有特徵
+  const tpls = [mgmt, power, water];
+  assert.equal(matchTemplate({ collectionCode: '6DA' }, tpls).template.id, 'm');
+  assert.equal(matchTemplate({ profile: 'taipower', category: 'power' }, tpls).template.id, 'p');
+  // 沒有特徵可比:同類別只有一個固定繳費
+  assert.match(matchTemplate({ profile: 'water', category: 'water' }, tpls).reason, /同類別/);
+  // 帳號一樣最優先
+  assert.equal(matchTemplate({ accountNo: '123', profile: 'taipower' }, [...tpls, { id: 'x', name: 'X', accountNo: '123', scanHints: { profile: 'taipower' } }]).template.id, 'x');
+  // 兩個都一樣像 → 不猜
+  assert.equal(matchTemplate({ profile: 'taipower' }, [power, { ...power, id: 'p2' }]), null);
+  // 停用的不算
+  assert.equal(matchTemplate({ collectionCode: '6DA' }, [{ ...mgmt, active: false }]), null);
+  assert.deepEqual(scanHintsFrom({ profile: 'mgmt', collectionCode: '6DA', accountNo: '991', amount: 1 }),
+    { profile: 'mgmt', collectionCode: '6DA', accountNo: '991' });
 });

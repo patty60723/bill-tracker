@@ -9,6 +9,7 @@
 // 結果只用來預填表單,使用者存檔前一定看得到、改得到。
 
 import { addDays, diffDays, normalizeYear, todayISO, validDate } from './dates.js';
+import { detectProfile } from './profiles.js';
 
 const BARCODE_WINDOW_DAYS = 400; // 條碼日期離今天超過這麼久就當成看錯
 const GUESS_PAST_DAYS = 60; // 沒有關鍵字時,只在這個範圍內猜截止日
@@ -213,8 +214,8 @@ function findAmountIn(region) {
 }
 
 /** @returns {{ amount: number, rank: number } | null} rank 越小,找到它的關鍵字越可靠 */
-function findAmount(lines) {
-  for (const { re, rank } of AMOUNT_MATCHERS) {
+function findAmount(lines, list = AMOUNT_MATCHERS) {
+  for (const { re, rank } of list) {
     for (const region of regionsAfter(lines, re, AMOUNT_SKIP)) {
       const amount = findAmountIn(region);
       if (amount != null) return { amount, rank };
@@ -320,22 +321,6 @@ function findCycleFromRange(lines) {
   return null;
 }
 
-// 從帳單上的機構名稱猜名稱和類別(只在使用者還沒填時帶入)
-const ISSUERS = [
-  [/台灣電力|臺灣電力|台電|AIWAN\s*POWER/i, '台電電費', 'power'],
-  [/自來水/, '水費', 'water'],
-  [/中華電信/, '中華電信', 'telecom'],
-  [/台灣大哥大|臺灣大哥大/, '台灣大哥大', 'telecom'],
-  [/遠傳/, '遠傳電信', 'telecom'],
-  [/天然氣|瓦斯/, '瓦斯費', 'gas'],
-  [/管理委員會|管委會|管理費/, '管理費', 'rent'],
-];
-function findIssuer(lines) {
-  const text = lines.join('\n');
-  const hit = ISSUERS.find(([re]) => re.test(text));
-  return hit ? { issuerName: hit[1], category: hit[2] } : null;
-}
-
 /** 「代收截止日 115/11/06」:超商最後收單日(比繳費期限晚)。 */
 function findCollectCutoff(lines, today) {
   for (const region of regionsAfter(lines, '代收截止')) {
@@ -346,8 +331,10 @@ function findCollectCutoff(lines, today) {
   return null;
 }
 
+const textLines = (text) => normalizeOcrText(text).split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+
 export function parseBillText(text, today = todayISO()) {
-  const lines = normalizeOcrText(text).split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const lines = textLines(text);
   const result = {};
   const found = findAmount(lines);
   if (found) Object.assign(result, { amount: found.amount, amountRank: found.rank });
@@ -355,7 +342,6 @@ export function parseBillText(text, today = todayISO()) {
   const range = findPeriodRange(lines);
   Object.assign(result, range, findPeriodMonth(lines));
   if (!result.cycleMonths) Object.assign(result, findCycleFromRange(lines));
-  Object.assign(result, findIssuer(lines));
   const cutoff = findCollectCutoff(lines, today);
   if (cutoff) result.collectCutoff = cutoff;
   Object.assign(result, findPayAccount(lines));
@@ -399,7 +385,6 @@ export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO()) {
     if (!fromText.bankCode && r.bankCode && r.accountNo === fromText.accountNo) fromText.bankCode = r.bankCode;
     if (!fromText.period && r.period) Object.assign(fromText, { period: r.period });
     if (!fromText.cycleMonths && r.cycleMonths) fromText.cycleMonths = r.cycleMonths;
-    if (!fromText.issuerName && r.issuerName) Object.assign(fromText, { issuerName: r.issuerName, category: r.category });
     if (!fromText.collectCutoff && r.collectCutoff) fromText.collectCutoff = r.collectCutoff;
     if (r.dueDate && (!fromText.dueDate || (fromText.dueDateGuessed && !r.dueDateGuessed))) {
       fromText.dueDate = r.dueDate;
@@ -421,6 +406,20 @@ export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO()) {
     if (fromText.amount === printed.amount || (fromText.amount == null && printed.period)) {
       fromText.amount = printed.amount;
       amountSource = 'printed';
+    }
+  }
+  // 帳單種類(profiles.js):補名稱、類別、預設週期;有指定金額欄位的,改用那個欄位的金額
+  const profile = detectProfile(allText, { taxQr: fromBarcode.taxQr });
+  if (profile) {
+    Object.assign(fromText, { profile: profile.id, profileLabel: profile.label, category: profile.category });
+    if (profile.name) fromText.issuerName = profile.name;
+    if (!fromText.cycleMonths && profile.cycleMonths) fromText.cycleMonths = profile.cycleMonths;
+    if (profile.amountKeywords && fromBarcode.amount == null) {
+      const preferred = rawTexts.map((t) => findAmount(textLines(t), matchers(profile.amountKeywords))).find(Boolean);
+      if (preferred && preferred.amount !== fromText.amount) {
+        fromText.amount = preferred.amount;
+        amountSource = 'ocr';
+      }
     }
   }
   const result = {
