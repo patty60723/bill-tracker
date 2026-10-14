@@ -7,4 +7,4 @@
 | `ort.wasm.min.mjs`、`ort-wasm-simd-threaded.mjs`、`ort-wasm-simd-threaded.wasm` | npm `onnxruntime-web` 1.30.0(Microsoft ONNX Runtime) | MIT,見 `LICENSE-onnxruntime.txt` |
 | `ppocrv5_det.onnx`、`ppocrv5_rec.onnx`、`ppocrv5_dict.txt` | PaddleOCR PP-OCRv5 mobile(文字偵測 / 辨識,字典含繁體),ONNX 版取自 PyPI `onnxocr` 4.0.0 | Apache-2.0,見 `LICENSE-Apache-2.0.txt` |
 
-更新時:換檔案後把 `src/version.js` 的版本號加一,重跑 `npm run test:all`。
+更新時:換檔案後把 `src/version.js` 的版本號加一、`sw.js` 的 `VENDOR_CACHE` 改名(vendor 檔案是 cache-first,不改名手機會一直用舊的),重跑 `npm run test:all`。

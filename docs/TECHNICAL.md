@@ -679,6 +679,9 @@ for 每個 active && autoPay 的 template:
 - 註冊時 `updateViaCache: 'none'`:檢查 `sw.js` 與它 import 的模組有沒有更新時不經 HTTP 快取。
 - 開著 app 時新版接手(`controllerchange`)→ toast「已下載新版本 · 重新整理」;畫面上跑的仍是舊程式,
   不自動重新整理,免得打斷正在填的表單。
+- `vendor/` 走另一條路:**cache-first**,存在 `VENDOR_CACHE`(`bill-tracker-vendor-v1`),activate 時不刪。
+  原本跟 app 檔案放同一個快取,每次發新版都會被清掉,手機要重新下載 22 MB 的 PaddleOCR 模型
+  (實測載入從 0.9 s 變 4.8 s)。**vendor/ 的檔案換了要改 `VENDOR_CACHE` 的名字**,不然手機會一直用舊的。
 - **改任何前端檔案都要把 `src/version.js` 的 `VERSION` 加一**:快取名稱是 `bill-tracker-${VERSION}`,
   瀏覽器偵測到 `sw.js` 或它 import 的檔案改變時重新 install,整批換新離線快取。
   設定頁最下面顯示版本號,測試前可以先確認手機上是不是新版。
@@ -775,4 +778,4 @@ node 端用 `tesseract.js` + `sharp`,對同一組合成困難帳單比較原圖 
 | onnxruntime-web | 1.30.0 | MIT | `vendor/paddle/ort.wasm.min.mjs`、`ort-wasm-simd-threaded.{mjs,wasm}` | `npm pack onnxruntime-web@x`,複製 `dist/` 這三個檔 |
 | PaddleOCR PP-OCRv5 mobile(ONNX) | onnxocr 4.0.0 | Apache-2.0 | `vendor/paddle/ppocrv5_{det,rec}.onnx`、`ppocrv5_dict.txt` | PyPI `onnxocr` wheel 的 `onnxocr/models/ppocrv5/`(Hugging Face 在開發環境被擋) |
 
-更新後記得把 `src/version.js` 的 `VERSION` 加一,並重跑 `npm test` 與掃描相關的端對端驗證。
+更新後記得把 `src/version.js` 的 `VERSION` 加一、`sw.js` 的 `VENDOR_CACHE` 也改名(vendor 檔案是 cache-first),並重跑 `npm test` 與掃描相關的端對端驗證。

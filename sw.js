@@ -1,13 +1,16 @@
 // Service worker(以 module 形式註冊):
 // 1. 離線可用:app 檔案先走網路(每次都跟伺服器確認)、失敗才用快取(這樣更新後馬上是新版)。
 //    版本號在 src/version.js,前端有改就要加 1。
-//    OCR 的大檔(vendor/tesseract/)不預先下載,第一次用到時由 fetch 順便快取。
+//    OCR 的大檔(vendor/paddle/、vendor/tesseract/)不預先下載,第一次用到時存進 VENDOR_CACHE(不隨版本清掉)。
 // 2. 背景提醒:Android Chrome 把 app 加到主畫面後,瀏覽器會定期(大約一天一次以上,時間由瀏覽器決定)
 //    用 periodicsync 叫醒這裡,有快截止、逾期、該拿繳費單的帳單就跳通知。
 import { notifyReminders, SYNC_TAG } from './src/notify.js';
 import { VERSION } from './src/version.js';
 
 const CACHE = `bill-tracker-${VERSION}`;
+// vendor/(OCR 模型、引擎,共約 35 MB)放在另一個快取,不跟著 app 版本清掉;只有 vendor/ 的檔案換了才改這個名字。
+// 實測:放在一起時每次發新版,手機都要重新下載 22 MB 的 PaddleOCR 模型。
+const VENDOR_CACHE = 'bill-tracker-vendor-v1';
 const ASSETS = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png',
   'icon-maskable-512.png', 'badge-96.png',
@@ -27,7 +30,7 @@ self.addEventListener('install', (e) => {
 
 self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys()
-    .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+    .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== VENDOR_CACHE).map((k) => caches.delete(k))))
     .then(() => self.clients.claim()));
 });
 
@@ -45,15 +48,18 @@ function withIsolation(res) {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
+  if (url.pathname.includes('/vendor/')) {
+    e.respondWith(vendorFile(e.request));
+    return;
+  }
   e.respondWith((async () => {
     const cache = await caches.open(CACHE);
     try {
       // 一律跟伺服器確認是不是最新的(沒變只回 304,很省):GitHub Pages 讓瀏覽器快取 10 分鐘,
-      // 不加的話更新後可能還拿到舊檔,甚至新舊檔混用。vendor/ 的大檔不會變,照一般快取。
-      const fresh = url.pathname.includes('/vendor/') ? {} : { cache: 'no-cache' };
+      // 不加的話更新後可能還拿到舊檔,甚至新舊檔混用。
       const res = e.request.mode === 'navigate'
-        ? await fetch(e.request.url, { ...fresh, credentials: 'same-origin' })
-        : await fetch(e.request, fresh);
+        ? await fetch(e.request.url, { cache: 'no-cache', credentials: 'same-origin' })
+        : await fetch(e.request, { cache: 'no-cache' });
       if (res.ok) cache.put(e.request, res.clone());
       return withIsolation(res);
     } catch (err) {
@@ -63,6 +69,15 @@ self.addEventListener('fetch', (e) => {
     }
   })());
 });
+
+/** vendor/ 的檔案不會變:先用快取(任何一個,app shell 預先快取的 zxing 也算),沒有才下載並存進 VENDOR_CACHE。 */
+async function vendorFile(request) {
+  const cached = await caches.match(request, { ignoreSearch: true });
+  if (cached) return withIsolation(cached);
+  const res = await fetch(request);
+  if (res.ok) (await caches.open(VENDOR_CACHE)).put(request, res.clone());
+  return withIsolation(res);
+}
 
 self.addEventListener('periodicsync', (e) => {
   if (e.tag === SYNC_TAG) e.waitUntil(notifyReminders(self.registration, { background: true }));

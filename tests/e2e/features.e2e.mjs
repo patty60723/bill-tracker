@@ -219,6 +219,14 @@ test('通知:測試通知會真的顯示並回報;行事曆匯出', async () => 
   await page.reload();
   await page.waitForSelector('#notif-test');
   assert.ok(await page.evaluate(() => !!navigator.serviceWorker.controller));
+  // vendor/(OCR 模型)存在不隨版本清掉的快取裡
+  const vendorCached = await page.evaluate(async () => {
+    await fetch('vendor/paddle/ppocrv5_dict.txt');
+    const keys = await caches.keys();
+    const vendor = keys.find((k) => k.startsWith('bill-tracker-vendor-'));
+    return { vendor, hit: !!(vendor && await (await caches.open(vendor)).match('vendor/paddle/ppocrv5_dict.txt')) };
+  });
+  assert.ok(vendorCached.hit, JSON.stringify(vendorCached));
   await page.click('#notif-test');
   await page.waitForFunction(() => /✅/.test(document.querySelector('#notif-result')?.textContent || ''));
   const shown = await page.evaluate(async () => (await (await navigator.serviceWorker.ready).getNotifications()).map((n) => n.title));
