@@ -565,3 +565,24 @@ test('依位置找值:表頭底下同一欄連續都是數字 → 明細表頭,�
   const t2 = `${text}\n總計 $ 4,504`;
   assert.equal(parseBillText(t2, '2026-09-10', layoutOf(withTotal)).amount, 4504);
 });
+
+test('瓦斯費(真實 PaddleOCR 輸出,個資已換):基本費不是總額、抄表日不是期限、延期繳費日當代收截止日', async () => {
+  const fs = await import('node:fs');
+  const text = fs.readFileSync(new URL('./fixtures/gas-paddle.txt', import.meta.url), 'utf8');
+  // 沒讀到條碼:靠文字
+  const r = mergeScan([], [text], '2026-09-25');
+  assert.equal(r.amount, 269); // 不是「應繳總金額」下一行的「基本費:200元」
+  assert.equal(r.dueDate, '2026-10-04'); // 不是「下次抄表截止日期 115/11/15」
+  assert.equal(r.collectCutoff, '2026-11-03'); // 延期繳費日
+  assert.equal(r.period, '2026-09'); // 「115年09月瓦斯氣費」
+  assert.equal(r.cycleMonths, 2); // 計費區間 07/15 至 09/14
+  assert.equal(r.category, 'gas');
+  assert.equal(r.accountNo, '9128000011112222');
+  assert.equal(r.bankCode, '008');
+  // 讀到條碼:條碼第一段是延期繳費日 11/03,截止日仍用限繳期限
+  const b = mergeScan(['151103309', '2609A2000000269'], [text], '2026-09-25');
+  assert.equal(b.dueDate, '2026-10-04');
+  assert.equal(b.collectCutoff, '2026-11-03');
+  assert.equal(b.amount, 269);
+  assert.equal(b.source.amount, 'barcode');
+});

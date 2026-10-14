@@ -82,8 +82,10 @@ export function parseConvenienceBarcodes(texts, today = todayISO()) {
 // ---------- OCR 文字 ----------
 
 // 依可靠程度排序:越前面越優先
+// 這些行裡的「截止日期」不是繳費期限(瓦斯單「下次抄表截止日期 115/11/15」)
+const DUE_SKIP = /抄表/;
 const DUE_KEYWORDS = [
-  '繳費截止日', '繳款截止日', '繳納截止日', '繳費期限', '繳款期限', '繳納期限', '限繳日期', '最後繳費日', '最後繳款日',
+  '繳費截止日', '繳款截止日', '繳納截止日', '繳費期限', '繳款期限', '繳納期限', '限繳期限', '限繳日期', '最後繳費日', '最後繳款日',
   '代收期限', '截止日期', '截止日', '到期日', '繳費日期', '期限',
 ];
 const AMOUNT_KEYWORDS = [
@@ -260,7 +262,7 @@ const regionFinder = (lines, layout) => (re, skip, opts) => {
 
 function findDueDate(lines, today, regionsOf = regionFinder(lines)) {
   for (const { re } of DUE_MATCHERS) {
-    for (const full of regionsOf(re)) {
+    for (const full of regionsOf(re, DUE_SKIP)) {
       const cut = full.search(ANY_DUE_RE);
       const region = cut > 0 ? full.slice(0, cut) : full;
       // 截止日通常是附近日期裡最晚的那個(計費期間、出帳日都比較早)
@@ -272,9 +274,16 @@ function findDueDate(lines, today, regionsOf = regionFinder(lines)) {
   return null;
 }
 
+// 「基本費:200元」這種別的欄位的值。關鍵字下一行常是明細(瓦斯單「應繳總金額」下一行是「基本費:200元」),不能當總額
+// (後面接 / . - 的是日期,不拿掉;拿掉的地方換成「|」,免得前後的數字黏成一個日期)
+const OTHER_LABELED = new RegExp(`[${CJK}]{2,}\\s*[:]\\s*(?:NT\\$|\\$)?\\s*-?\\d[\\d,]*(?:\\.\\d+)?(?![\\d/.-])\\s*元?`, 'g');
+
 function findAmountIn(region) {
-  let text = region;
-  for (const d of allDates(region)) text = text.replace(region.substr(d.index, d.length), ' ');
+  // 關鍵字那一行之後的幾行:拿掉別的欄位的值
+  const [first, ...rest] = region.split(' \n ');
+  let text = [first, ...rest.map((l) => l.replace(OTHER_LABELED, ' | '))].join(' \n ');
+  // 先取出所有日期字串再刪(邊刪邊用 index 會錯位)
+  for (const d of allDates(text).map((x) => text.substr(x.index, x.length))) text = text.replace(d, ' ');
   // OCR 常把千分位看錯:「2,.219」「2.219」→ 2,219(小數點後剛好 3 位,帳單金額不會這樣寫)
   text = text.replace(/(?<![\d.,])(\d{1,3})(?:\s?[,.]){1,2}\s?(?=\d{3}(?![\d.]))/g, '$1,');
   const nums = [...text.matchAll(/(NT\$|NTD|\$|新臺幣|新台幣)?\s*(\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?\s*(元)?/g)]
@@ -365,7 +374,7 @@ function findPeriodRange(lines) {
 /** 「115 年 09 月 繳費通知單」「繳費月份 115年09月」→ 帳單月份。 */
 function findPeriodMonth(lines) {
   const text = periodLines(lines).join('\n');
-  const m = text.match(/(?<!\d)(\d{3,4})\s*年\s*(\d{1,2})\s*月\s*份?\s*(?:繳費通知|繳費憑證|繳款通知|帳單|電費|水費|管理費)/)
+  const m = text.match(/(?<!\d)(\d{3,4})\s*年\s*(\d{1,2})\s*月\s*份?\s*(?:繳費通知|繳費憑證|繳款通知|帳單|電費|水費|管理費|瓦斯|天然氣|電信費)/)
     || text.match(/(?:繳費月份|帳單月份|計費月份)\s*[::]?\s*\n?\s*(\d{3,4})\s*年\s*(\d{1,2})\s*月/);
   if (!m) return null;
   const year = normalizeYear(+m[1]);
@@ -391,9 +400,9 @@ function findCycleFromRange(lines) {
   return null;
 }
 
-/** 「代收截止日 115/11/06」:超商最後收單日(比繳費期限晚)。 */
+/** 「代收截止日 115/11/06」(台電)、「延期繳費日 115年11月3日」(瓦斯):超商最後收單日(比繳費期限晚)。 */
 function findCollectCutoff(lines, today) {
-  for (const region of regionsAfter(lines, '代收截止')) {
+  for (const region of regionsAfter(lines, /代收截止|延期繳費/)) {
     // 取最靠近關鍵字的那個(allDates 是依格式分批找的,不是依位置)
     const d = allDates(region).filter((x) => near(x.date, today, BARCODE_WINDOW_DAYS)).sort((a, b) => a.index - b.index)[0];
     if (d) return d.date;
@@ -508,7 +517,7 @@ export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO(), layou
   // 台電等帳單:條碼上的日期是「代收截止日」(超商最後收單日),比帳單上的「繳費期限」晚,
   // 過了繳費期限就開始算遲付費用。截止日改用繳費期限,代收截止日記成 collectCutoff(畫面上寫進備註)。
   if (dueSource === 'barcode' && fromText.dueDate && !fromText.dueDateGuessed && fromText.dueDate < fromBarcode.dueDate
-    && diffDays(fromText.dueDate, fromBarcode.dueDate) <= 60 && rawTexts.some((t) => /代收截止/.test(normalizeOcrText(t)))) {
+    && diffDays(fromText.dueDate, fromBarcode.dueDate) <= 60 && rawTexts.some((t) => /代收截止|延期繳費/.test(normalizeOcrText(t)))) {
     result.collectCutoff = fromBarcode.dueDate;
     result.dueDate = fromText.dueDate;
     result.source.dueDate = 'ocr';
