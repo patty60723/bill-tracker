@@ -103,6 +103,8 @@ async function detectBoxes(canvas, errors, stats = newStats()) {
     }
   } catch (e) {
     errors.push(`內建條碼偵測:${e.message || e}`);
+    // Android 的偵測服務有時候整個不能用(not implemented / service unavailable),之後就別再叫它
+    if (/not implemented|unavailable|NotSupported/i.test(`${e.name} ${e.message}`)) nativeDetectorPromise = Promise.resolve(null);
   }
   t = performance.now();
   try {
@@ -159,6 +161,8 @@ const SEGMENT_HINT = /^\*?[0-9A-Z-]{8,20}\*?$/;
 const UPSCALE = 2;
 const MAX_CROP_DIM = 4096;
 const MAX_ZOOMS = 5; // 最多放大幾欄(一個線索最多 3 欄:靠左、置中、靠右)
+const MAX_ROWS = 12; // 每欄最多切幾條
+const ZOOM_BUDGET_MS = 4000; // 放大重掃最多花這麼久(手機上 zxing 一次約 50 ms)
 
 /**
  * 三段式條碼是上下疊在同一欄,各段長度不同(9 / 16 / 15 碼)。讀到其中一段(或讀錯但長度像)時,
@@ -173,13 +177,21 @@ function columnRows(hit, W, H) {
   const len = text.replace(/\*/g, '').length;
   const u = box.w * Math.max(1, 16 / len);
   const lefts = len >= 14 ? [box.x - 0.1 * u] : [box.x - 0.1 * u, box.x + box.w / 2 - 0.6 * u, box.x + box.w - 1.1 * u];
-  const rowH = box.h * 2.5;
+  // 條碼只在少數幾條掃描線上讀到時,回報的高度可能只有 1–2 px(實測一次切出幾百條、條碼花 26 秒),
+  // 所以高度限制在 u 的 8%–25%(超商條碼高度大約是寬度的 10%–20%),每欄最多 MAX_ROWS 條
+  const bh = Math.min(Math.max(box.h, 0.08 * u), 0.25 * u);
+  const top = Math.max(0, box.y - 0.6 * u);
+  const bottom = Math.min(H, box.y + box.h + 0.6 * u);
+  const count = Math.max(1, Math.min(MAX_ROWS, Math.ceil((bottom - top) / (bh * 1.25))));
+  const step = (bottom - top) / count;
+  const rowH = Math.max(bh * 2.5, step * 1.5);
   const columns = [];
   for (const left of lefts) {
     const x = Math.max(0, left);
     const w = Math.min(W, left + 1.2 * u) - x;
     const rows = [];
-    for (let y = Math.max(0, box.y - 0.6 * u); y < Math.min(H, box.y + box.h + 0.6 * u); y += box.h * 1.25) {
+    for (let i = 0; i < count; i++) {
+      const y = top + i * step;
       const h = Math.min(H, y + rowH) - y;
       if (w > 0 && h > 0) rows.push({ x, y, w, h });
     }
@@ -232,15 +244,18 @@ export async function readBarcodes(file, { isEnough = () => false, timings } = {
     }
     return hits;
   };
+  let zoomDeadline = null; // 第一次放大時開始計時,超過 ZOOM_BUDGET_MS 就不再放大
+  const overBudget = () => zoomDeadline !== null && performance.now() > zoomDeadline;
   const zoomColumns = async (hits) => {
     for (const hit of hits) {
-      if (enough() || zoomed.length >= MAX_ZOOMS) return;
+      if (enough() || zoomed.length >= MAX_ZOOMS || overBudget()) return;
+      zoomDeadline ??= performance.now() + ZOOM_BUDGET_MS;
       for (const { region, rows } of columnRows(hit, W, H)) {
         // 同一塊已經放大掃過就不再掃
         if (enough() || !rows.length || zoomed.some((z) => overlaps(z, region))) continue;
         zoomed.push(region);
         for (const r of rows) {
-          if (enough()) break;
+          if (enough() || overBudget()) break;
           const scale = Math.min(UPSCALE, MAX_CROP_DIM / Math.max(r.w, r.h));
           await scan(cropCanvas(canvas, r.x, r.y, r.w, r.h, scale), r.x, r.y, scale);
         }

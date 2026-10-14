@@ -94,6 +94,27 @@ test('記住同一張帳單:存成固定繳費時記下特徵,下次掃到自動
   await context.close();
 });
 
+test('放大條碼區有上限:條碼位置高度只有 1 px、又一直讀不齊時,不會掃幾百次', async () => {
+  const { page, context, errors } = await openPage(browser, server.url);
+  await page.addInitScript(() => {
+    window.BarcodeDetector = class {
+      static async getSupportedFormats() { return ['code_39']; }
+      // 第三段的線索(讀錯一碼),高度 1 px
+      async detect() { return [{ rawValue: '1510AB00000123X', boundingBox: { x: 120, y: 400, width: 600, height: 1 } }]; }
+    };
+  });
+  await seed(page, server.url);
+  await page.goto(`${server.url}#/bill/new`);
+  await page.waitForSelector('#scan-btn');
+  await pick(page, 'bill.jpg', await barcodeBill(page, ['151031K6A'])); // 只有第一段,永遠讀不齊
+  await waitScan(page);
+  const detail = await page.textContent('.scan-detail pre');
+  const runs = Number(detail.match(/zxing (\d+) 次/)[1]);
+  assert.ok(runs <= 60, `zxing 跑了 ${runs} 次`);
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
 test('稅單 QR:繳款類別、銷帳編號、金額;截止日往前 3 天,條碼日期寫進備註', async () => {
   const { page, context, errors } = await newBillPage();
   await pick(page, 'tax.jpg', await paperWithImage(page, 'tax-qr.png'));
