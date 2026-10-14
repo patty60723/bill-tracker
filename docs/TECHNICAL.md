@@ -301,7 +301,11 @@ canvas 呼叫 `detectCanvas()`;讀到新條碼就震動、更新清單(✅ 截�
   單執行緒約慢 2–3 倍。偵測長邊 1280 會漏小字(13/14),2048 / 2400 沒有更準只是更慢。
 - 已知限制:傾斜照片裡行距很密的小字欄,相鄰兩行可能被框在一起(軸對齊矩形),該欄文字會亂;
   主要欄位不受影響。
-- 下載:runtime 3.5 MB + 模型 18 MB(gzip 後),第一次用到才下載。
+- 下載:runtime 3.5 MB + 模型 18 MB(gzip 後),第一次用到才下載。設定頁可以**預先下載**
+  (`downloadPaddle`):逐檔 `fetch(..., { cache: 'no-store' })`,讀 stream 算進度(用 `PADDLE_FILES`
+  記的解壓後大小當分母),讀完自己 `cache.put` 進 `VENDOR_CACHE`(不靠 service worker,
+  第一次開 app 時它還沒接手)。`paddleDownloaded` 檢查每個檔案都在快取裡;`removePaddle` 從所有快取刪掉。
+  `VENDOR_CACHE` 的名字放在 `src/version.js`,`sw.js` 和頁面共用。
 
 #### Tesseract(備援)
 

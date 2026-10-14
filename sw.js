@@ -5,12 +5,11 @@
 // 2. 背景提醒:Android Chrome 把 app 加到主畫面後,瀏覽器會定期(大約一天一次以上,時間由瀏覽器決定)
 //    用 periodicsync 叫醒這裡,有快截止、逾期、該拿繳費單的帳單就跳通知。
 import { notifyReminders, SYNC_TAG } from './src/notify.js';
-import { VERSION } from './src/version.js';
+import { VENDOR_CACHE, VERSION } from './src/version.js';
 
 const CACHE = `bill-tracker-${VERSION}`;
-// vendor/(OCR 模型、引擎,共約 35 MB)放在另一個快取,不跟著 app 版本清掉;只有 vendor/ 的檔案換了才改這個名字。
+// vendor/(OCR 模型、引擎)放在另一個快取 VENDOR_CACHE(src/version.js),不跟著 app 版本清掉。
 // 實測:放在一起時每次發新版,手機都要重新下載 22 MB 的 PaddleOCR 模型。
-const VENDOR_CACHE = 'bill-tracker-vendor-v1';
 const ASSETS = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png',
   'icon-maskable-512.png', 'badge-96.png',

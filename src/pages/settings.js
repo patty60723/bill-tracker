@@ -1,9 +1,10 @@
-// 設定頁:通知、行事曆、新手引導、備份 / 匯入 / CSV。
+// 設定頁:通知、行事曆、文字辨識預先下載、新手引導、備份 / 匯入 / CSV。
 
 import { backupSummary, describeBackup } from '../backup.js';
 import { formatDate, todayISO } from '../dates.js';
 import * as db from '../db.js';
 import { buildICS } from '../ics.js';
+import { downloadPaddle, PADDLE_TOTAL_BYTES, paddleDownloaded, removePaddle } from '../paddle.js';
 import { alertDialog, confirmDialog } from '../modal.js';
 import { billsToCSV } from '../stats.js';
 import { backupNow, getBackupStatus, loadAll } from '../ui/actions.js';
@@ -29,6 +30,12 @@ export async function renderSettings() {
       <p class="muted small">把所有固定繳費匯出成行事曆檔,用手機打開匯入後,就算沒開這個 app,到單日和截止前也會跳提醒。之後修改了固定繳費,再匯出一次即可(同一個項目會更新,不會重複)。</p>
       <button class="btn primary" id="ics">匯出行事曆提醒 (.ics)</button>
     </section>
+    <section class="card col" id="ocr-box">
+      <h3>🔤 文字辨識(拍照辨識用)</h3>
+      <p class="small" id="ocr-status">檢查中…</p>
+      <progress id="ocr-progress" max="1" value="0" hidden></progress>
+      <div class="btn-row" id="ocr-actions"></div>
+    </section>
     <section class="card col">
       <h3>👋 新手引導</h3>
       <p class="muted small">在首頁重新顯示「加到主畫面、開啟通知、建立第一筆」的步驟。</p>
@@ -47,6 +54,8 @@ export async function renderSettings() {
       </div>
     </section>
     <p class="muted small version">繳費小幫手 ${VERSION}</p>`;
+
+  drawOcrBox();
 
   $('#ics').onclick = async () => {
     const { templates } = await loadAll();
@@ -111,3 +120,71 @@ export async function renderSettings() {
 
 
 // ---------- 通知 ----------
+
+const MB = (bytes) => (bytes / 1048576).toFixed(0);
+let ocrDownloading = null; // 下載中的 Promise:離開設定頁再回來時繼續顯示進度
+
+/** 文字辨識區塊:顯示是否已下載、預先下載(有進度)、刪除。 */
+async function drawOcrBox() {
+  const status = $('#ocr-status');
+  const actions = $('#ocr-actions');
+  const bar = $('#ocr-progress');
+  if (!status) return;
+  if (ocrDownloading) {
+    status.textContent = '下載中…';
+    bar.hidden = false;
+    actions.innerHTML = '';
+    return;
+  }
+  const ready = await paddleDownloaded();
+  if (!$('#ocr-status')) return; // 已經換頁
+  bar.hidden = true;
+  if (ready === null) {
+    status.textContent = '這個瀏覽器不支援預先下載,第一次拍照辨識時會自動下載。';
+    actions.innerHTML = '';
+    return;
+  }
+  if (ready) {
+    status.innerHTML = `✅ 已下載,拍照辨識可以離線使用。<span class="muted">(佔用約 ${MB(PADDLE_TOTAL_BYTES)} MB 空間)</span>`;
+    actions.innerHTML = '<button class="btn" id="ocr-remove">刪除,釋放空間</button>';
+    $('#ocr-remove').onclick = async () => {
+      if (!(await confirmDialog({
+        title: '刪除文字辨識資料?',
+        message: '下次拍照辨識時會再自動下載(約 22 MB)。',
+        ok: '刪除',
+      }))) return;
+      await removePaddle();
+      toast('已刪除');
+      drawOcrBox();
+    };
+    return;
+  }
+  const cellular = navigator.connection?.type === 'cellular' || navigator.connection?.saveData;
+  status.innerHTML = '還沒下載。第一次拍照辨識時會自動下載約 22 MB,要等一下;建議現在先在 Wi-Fi 下載好。'
+    + (cellular ? '<br>⚠️ 目前看起來是行動網路。' : '');
+  actions.innerHTML = '<button class="btn primary" id="ocr-download">預先下載(約 22 MB)</button>';
+  $('#ocr-download').onclick = startOcrDownload;
+}
+
+async function startOcrDownload() {
+  const progress = (done, total) => {
+    const bar = $('#ocr-progress');
+    const status = $('#ocr-status');
+    if (!bar || !status) return;
+    bar.hidden = false;
+    bar.value = done / total;
+    status.textContent = `下載中… ${Math.round((done / total) * 100)}%(${MB(done)} / ${MB(total)} MB)`;
+  };
+  ocrDownloading = downloadPaddle(progress);
+  drawOcrBox();
+  try {
+    await ocrDownloading;
+    toast('文字辨識已下載完成');
+  } catch (e) {
+    console.warn(e);
+    await alertDialog({ title: '下載沒有完成', message: `${e.message || e}。可以稍後再試,或第一次拍照辨識時會自動下載。` });
+  } finally {
+    ocrDownloading = null;
+    drawOcrBox();
+  }
+}

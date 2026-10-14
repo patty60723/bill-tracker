@@ -238,3 +238,31 @@ test('通知:測試通知會真的顯示並回報;行事曆匯出', async () => 
   assert.deepEqual(errors, []);
   await context.close();
 });
+
+test('預先下載文字辨識:下載進快取、顯示已下載、刪除後恢復', async () => {
+  const { page, context, errors } = await openPage(browser, server.url);
+  await seed(page, server.url);
+  await page.goto(`${server.url}#/settings`);
+  await page.waitForSelector('#ocr-download');
+  assert.match(await page.textContent('#ocr-status'), /還沒下載/);
+  await page.click('#ocr-download');
+  await page.waitForSelector('#ocr-remove', { timeout: 120000 });
+  assert.match(await page.textContent('#ocr-status'), /已下載/);
+  const cached = await page.evaluate(async () => {
+    const { PADDLE_FILES } = await import('./src/paddle.js');
+    const { VENDOR_CACHE } = await import('./src/version.js');
+    const cache = await caches.open(VENDOR_CACHE);
+    return Promise.all(PADDLE_FILES.map(async ([f]) => !!(await cache.match(`vendor/paddle/${f}`))));
+  });
+  assert.ok(cached.every(Boolean), JSON.stringify(cached));
+  // 離開再回來還是顯示已下載
+  await page.goto(`${server.url}#/`);
+  await page.goto(`${server.url}#/settings`);
+  await page.waitForSelector('#ocr-remove');
+  await page.click('#ocr-remove');
+  await modalClick(page, '刪除');
+  await page.waitForSelector('#ocr-download');
+  assert.match(await page.textContent('#ocr-status'), /還沒下載/);
+  assert.deepEqual(errors, []);
+  await context.close();
+});

@@ -6,7 +6,71 @@
 // 實測(三張真實帳單,跑一次就解析):PaddleOCR 14/14 欄位正確、Tesseract 9/14;
 // 速度靠多執行緒(需要 crossOriginIsolated,由 sw.js 加 COOP/COEP 標頭),單執行緒時約慢 2–3 倍。
 
+import { VENDOR_CACHE } from './version.js';
+
 const vendorUrl = (path) => new URL(`../vendor/paddle/${path}`, import.meta.url).href;
+
+// PaddleOCR 用到的所有檔案與大小(解壓後的 bytes,算下載進度用;實際傳輸有 gzip,約 22 MB)
+export const PADDLE_FILES = [
+  ['ort.wasm.min.mjs', 50126],
+  ['ort-wasm-simd-threaded.mjs', 24381],
+  ['ort-wasm-simd-threaded.wasm', 14239897],
+  ['ppocrv5_det.onnx', 4819576],
+  ['ppocrv5_rec.onnx', 16631306],
+  ['ppocrv5_dict.txt', 92395],
+];
+export const PADDLE_TOTAL_BYTES = PADDLE_FILES.reduce((a, [, n]) => a + n, 0);
+
+/** PaddleOCR 的檔案是不是都已經在快取裡(可以離線用)。瀏覽器沒有 Cache API 時回傳 null。 */
+export async function paddleDownloaded() {
+  if (!('caches' in self)) return null;
+  for (const [f] of PADDLE_FILES) {
+    if (!(await caches.match(vendorUrl(f), { ignoreSearch: true }))) return false;
+  }
+  return true;
+}
+
+/**
+ * 預先下載(設定頁):把還沒快取的檔案下載進 VENDOR_CACHE,onProgress(已下載 bytes, 總 bytes)。
+ * 自己寫進快取,不靠 service worker(第一次開 app 時它還沒接手)。
+ */
+export async function downloadPaddle(onProgress) {
+  const cache = await caches.open(VENDOR_CACHE);
+  let done = 0;
+  for (const [f, size] of PADDLE_FILES) {
+    const url = vendorUrl(f);
+    if (await caches.match(url, { ignoreSearch: true })) {
+      done += size;
+      onProgress?.(done, PADDLE_TOTAL_BYTES);
+      continue;
+    }
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`${f} 下載失敗(${res.status})`);
+    const reader = res.body.getReader();
+    const chunks = [];
+    let got = 0;
+    for (;;) {
+      const { done: end, value } = await reader.read();
+      if (end) break;
+      chunks.push(value);
+      got += value.length;
+      onProgress?.(done + Math.min(got, size), PADDLE_TOTAL_BYTES);
+    }
+    await cache.put(url, new Response(new Blob(chunks), { headers: { 'Content-Type': res.headers.get('Content-Type') || '' } }));
+    done += size;
+    onProgress?.(done, PADDLE_TOTAL_BYTES);
+  }
+}
+
+/** 刪掉已下載的 PaddleOCR 檔案(釋放約 34 MB;下次拍照辨識會再下載)。 */
+export async function removePaddle() {
+  const names = await caches.keys();
+  for (const name of names) {
+    const cache = await caches.open(name);
+    for (const [f] of PADDLE_FILES) await cache.delete(vendorUrl(f), { ignoreSearch: true });
+  }
+  enginePromise = null;
+}
 
 const DET_MAX_SIDE = 1600; // 偵測用的圖長邊;1280 會漏掉小字(實測 13/14),再大只是變慢
 const DET_THRESH = 0.2; // 機率圖二值化門檻
