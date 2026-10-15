@@ -615,6 +615,11 @@ test('台灣大哥大(電信費 + 代收費用兩頁):信用卡號不是金額�
   assert.equal(collect.amount, 1398);
   assert.equal(collect.period, '2026-10'); // 「115年10月 代收費用帳單」
   assert.equal(collect.category, 'telecom'); // 沒寫業者名稱:通用的電信費
+  // 繳款方式「轉帳代繳」:自動扣款的帳單;其他真實帳單不會被誤判
+  assert.equal(telecom.autoPay, true);
+  for (const f of ['gas-paddle.txt', 'water-paddle.txt', 'land-tax-pass1.txt', 'mgmt-fee-pass1.txt']) {
+    assert.equal(parseBillText(read(f), '2026-10-15').autoPay, undefined, f);
+  }
   // 台電的「****2219」是金額(星號補位),不是遮罩號碼
   assert.equal(parseBillText('應繳總金額\n****2,219 元', '2026-09-20').amount, 2219);
 });

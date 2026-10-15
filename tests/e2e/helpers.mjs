@@ -145,6 +145,21 @@ export async function barcodeBill(page, codes, { width = 1400, height = 900, nar
   return Buffer.from(b64, 'base64');
 }
 
+/** 在頁面裡畫一張只有文字的「帳單」(每個元素一行),回傳 JPEG Buffer。給 OCR 流程的測試用。 */
+export async function textBill(page, lines, { width = 900, lineHeight = 64 } = {}) {
+  const b64 = await page.evaluate(({ lines, width, lineHeight }) => {
+    const c = document.createElement('canvas');
+    c.width = width;
+    c.height = lineHeight * (lines.length + 1);
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+    g.fillStyle = '#111'; g.font = '36px sans-serif'; g.textBaseline = 'top';
+    lines.forEach((t, i) => g.fillText(t, 40, 30 + i * lineHeight));
+    return c.toDataURL('image/jpeg', 0.92).split(',')[1];
+  }, { lines, width, lineHeight });
+  return Buffer.from(b64, 'base64');
+}
+
 /** 把一張圖片 fixture 貼在一張紙上(模擬拍到的稅單),回傳 JPEG Buffer。 */
 export async function paperWithImage(page, fixture, { width = 1200, height = 800 } = {}) {
   const src = fs.readFileSync(path.join(FIXTURES, fixture)).toString('base64');

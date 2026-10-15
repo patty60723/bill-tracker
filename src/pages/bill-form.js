@@ -265,14 +265,18 @@ export async function renderBillForm(id, params) {
   const hasScan = () => scan.barcodes.size > 0 || scan.texts.length > 0 || scan.photos.length > 0;
   /** 掃描結果寫進欄位,並記下原值,換帳單時才還原得回去。 */
   const fill = (name, value) => {
-    if (!(name in scan.before)) scan.before[name] = field(name).value;
-    field(name).value = value;
-    scan.filled[name] = field(name).value;
+    const el = field(name);
+    const prop = el.type === 'checkbox' ? 'checked' : 'value';
+    if (!(name in scan.before)) scan.before[name] = el[prop];
+    el[prop] = value;
+    scan.filled[name] = el[prop];
   };
   /** 清掉上一次掃描的影響:條碼/文字、它帶入的欄位(使用者之後自己改過的保留)、它加的照片。 */
   async function resetScan() {
     for (const [name, value] of Object.entries(scan.filled)) {
-      if (field(name).value === value) field(name).value = scan.before[name];
+      const el = field(name);
+      const prop = el.type === 'checkbox' ? 'checked' : 'value';
+      if (el[prop] === value) el[prop] = scan.before[name];
     }
     for (const fid of scan.photos) {
       bill.billFiles = bill.billFiles.filter((x) => x !== fid);
@@ -505,6 +509,16 @@ export async function renderBillForm(id, params) {
         : { label: '繳費帳號', value: accountText(r), source: 'ocr' });
     }
 
+    // 帳單寫著轉帳代繳 / 自動扣繳:存成固定繳費時預設自動扣款(到截止日自動記成已繳,不提醒去繳)
+    if (r.autoPay) {
+      const tpl = templates.find((t) => t.id === field('templateId').value);
+      if (!tpl) {
+        if (!field('autoPay').checked) fill('autoPay', true);
+        notes.push('🔄 帳單上寫著自動扣款(轉帳代繳):勾「同時存成固定繳費」時,已預設「自動扣款」。');
+      } else if (!tpl.autoPay) {
+        notes.push(`🔄 帳單上寫著自動扣款(轉帳代繳),可以到「固定繳費」把「${esc(tpl.name)}」設成自動扣款,截止日會自動記成已繳。`);
+      }
+    }
     if (r.source.dueDate === 'guess') warnings.push('⚠️ 帳單上沒找到「繳費期限」之類的字,截止日是用帳單上最晚的日期<b>推測</b>的,請一定要核對。');
     const LOW_RES = 2000; // 長邊少於這個,條碼和小字很容易讀不到
     if (scan.size && Math.max(scan.size.width, scan.size.height) < LOW_RES) {

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  barcodeBill, dbAll, FIXTURES, fakeCameraVideo, launch, modalClick, openPage, paperWithImage, seed, startServer, waitScan,
+  barcodeBill, dbAll, FIXTURES, textBill, fakeCameraVideo, launch, modalClick, openPage, paperWithImage, seed, startServer, waitScan,
 } from './helpers.mjs';
 
 let server;
@@ -160,6 +160,19 @@ test('同一張帳單的另一頁:兩頁金額不同時可以加總,明細寫進
   assert.equal((await cards(page))['金額'], '$3,893 多頁加總');
   assert.match(await value(page, 'notes'), /2 頁加總:\$2,495 \+ \$1,398 = \$3,893/);
   assert.equal(await page.$$eval('#bill-files .file', (e) => e.length), 2); // 兩頁照片都留著
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('帳單寫著轉帳代繳:存成固定繳費時預設自動扣款', async () => {
+  const { page, context, errors } = await newBillPage();
+  await pick(page, 'auto.jpg', await textBill(page, [
+    '115年10月 電信費用帳單', '應繳總額  繳款截止日  繳款方式', '2,495  115/11/02  轉帳代繳',
+  ]));
+  await waitScan(page);
+  assert.equal(await value(page, 'amount'), '2495');
+  assert.equal(await page.isChecked('[name=autoPay]'), true);
+  assert.match(await page.textContent('.scan-notes'), /自動扣款/);
   assert.deepEqual(errors, []);
   await context.close();
 });
