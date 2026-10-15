@@ -15,7 +15,7 @@ const ASSETS = [
   'icon-maskable-512.png', 'badge-96.png',
   'src/app.js', 'src/backup.js', 'src/dates.js', 'src/db.js', 'src/enhance.js', 'src/ics.js',
   'src/livescan.js', 'src/modal.js', 'src/notify.js', 'src/pages/bill-form.js', 'src/pages/bills.js',
-  'src/pages/home.js', 'src/pages/settings.js', 'src/pages/templates.js', 'src/paddle.js', 'src/parse.js', 'src/profiles.js', 'src/scan.js',
+  'src/pages/home.js', 'src/pages/settings.js', 'src/pages/templates.js', 'src/paddle.js', 'src/parse.js', 'src/pdf.js', 'src/profiles.js', 'src/scan.js',
   'src/schedule.js', 'src/stats.js', 'src/ui/actions.js', 'src/ui/components.js', 'src/ui/dom.js',
   'src/ui/notifications.js', 'src/ui/router.js', 'src/ui/scan-view.js', 'src/version.js',
   'vendor/zxing-reader.js', 'vendor/zxing_reader.wasm',

@@ -3,8 +3,9 @@
 import { formatDate, formatPeriod, todayISO } from '../dates.js';
 import * as db from '../db.js';
 import { liveScan } from '../livescan.js';
-import { ask, confirmDialog } from '../modal.js';
+import { ask, confirmDialog, passwordDialog } from '../modal.js';
 import { mergeScan, parseConvenienceBarcodes, scanComplete } from '../parse.js';
+import { isPdf, readPdf } from '../pdf.js';
 import { matchTemplate, scanHintsFrom } from '../profiles.js';
 import { compressImage, imageSize, readBarcodes, readText } from '../scan.js';
 import { CYCLES as BILL_CYCLES, DEFAULT_REMIND_DAYS, nextPeriod, periodDates, suggestTemplateDays } from '../schedule.js';
@@ -46,8 +47,8 @@ export async function renderBillForm(id, params) {
             <span class="tile-icon">📷</span><b>拍照辨識</b><span>拍整張繳費單</span>
           </button>
           <label class="scan-tile">
-            <span class="tile-icon">🖼️</span><b>從相簿選</b><span>選拍好的照片</span>
-            <input type="file" id="pick-input" accept="image/*" hidden>
+            <span class="tile-icon">🖼️</span><b>從相簿選</b><span>照片或 PDF 帳單</span>
+            <input type="file" id="pick-input" accept="image/*,application/pdf,.pdf" hidden>
           </label>
           <button type="button" class="scan-tile" id="live-btn">
             <span class="tile-icon">▦</span><b>對準條碼掃</b><span>鏡頭靠近條碼</span>
@@ -370,12 +371,11 @@ export async function renderBillForm(id, params) {
     if (!file) return;
     const mode = await startScan();
     if (!mode) return;
-    scan.size = await imageSize(file);
-    scan.screenshot = file.type === 'image/png'; // 手機截圖是 PNG,相機拍的是 JPEG/HEIC
     scan.timings = [];
-    scan.photos.push(...await addFiles('billFiles', [file]));
+    const pdf = isPdf(file);
     const steps = [
-      { id: 'barcode', label: '讀條碼', state: 'active', note: '找帳單上的超商條碼、QR Code' },
+      ...(pdf ? [{ id: 'pdf', label: '讀取 PDF', state: 'active', note: '打開檔案、讀出每一頁' }] : []),
+      { id: 'barcode', label: '讀條碼', state: pdf ? 'pending' : 'active', note: '找帳單上的超商條碼、QR Code' },
       { id: 'ocr', label: '文字辨識', state: 'pending' },
       { id: 'parse', label: '整理結果', state: 'pending' },
     ];
@@ -384,32 +384,82 @@ export async function renderBillForm(id, params) {
       setStatus(progressHTML(steps));
     };
     setStatus(progressHTML(steps));
-    const { texts: codes, errors, engines, sources } = await readBarcodes(file, { isEnough: barcodesEnough, timings: scan.timings });
+
+    // PDF 電子帳單:讀出每一頁的文字和畫成圖片;照片就是它自己
+    let images = [file];
+    let pdfPages = null;
+    if (pdf) {
+      const t0 = performance.now();
+      try {
+        const doc = await readPdf(file, {
+          askPassword: (wrong) => passwordDialog({
+            title: wrong ? '密碼不對,再試一次' : '這個 PDF 有密碼',
+            message: '電子帳單的密碼通常是身分證字號(英文字母大寫)、生日或手機號碼,寄帳單的通知信裡會寫。',
+          }),
+        });
+        if (!doc) {
+          status.hidden = true;
+          return toast('沒有輸入密碼,已取消');
+        }
+        pdfPages = doc.pages;
+        images = doc.pages.map((pg) => pg.image);
+        scan.size = { width: doc.pages[0].width, height: doc.pages[0].height };
+        const withText = doc.pages.some((pg) => pg.hasText);
+        step('pdf', { state: 'done', note: `${doc.numPages} 頁${withText ? ',有文字可以直接讀' : ',是掃描的圖片,要用文字辨識'}` });
+      } catch (err) {
+        console.warn(err);
+        scan.errors.push(`PDF:${err?.message || err}`);
+        setStatus(`<ul class="scan-list scan-warnings"><li>⚠️ 讀不出這個 PDF(${esc(err?.message || err)})。可以截圖後改用「從相簿選」。</li></ul>`);
+        return;
+      }
+      scan.timings.push({ label: `讀取 PDF(${pdfPages.length} 頁)`, ms: performance.now() - t0 });
+      scan.screenshot = false;
+      step('barcode', { state: 'active' });
+    } else {
+      scan.size = await imageSize(file);
+      scan.screenshot = file.type === 'image/png'; // 手機截圖是 PNG,相機拍的是 JPEG/HEIC
+    }
+    scan.photos.push(...await addFiles('billFiles', [file])); // PDF 存原檔,之後可以點開看
+
+    const codes = [];
+    for (const img of images) {
+      const r = await readBarcodes(img, { isEnough: (t) => barcodesEnough([...codes, ...t]), timings: scan.timings });
+      codes.push(...r.texts.filter((c) => !codes.includes(c)));
+      scan.engines = scan.engines && images.length > 1 ? `${scan.engines} | ${r.engines}` : r.engines;
+      Object.assign(scan.sources, r.sources);
+      scan.errors.push(...r.errors);
+      if (barcodesEnough(codes)) break;
+    }
     codes.forEach((c) => scan.barcodes.add(c));
-    scan.engines = engines;
-    Object.assign(scan.sources, sources);
-    scan.errors.push(...errors);
     const bc = parseConvenienceBarcodes(codes);
     step('barcode', { state: 'done', note: barcodeNote(bc, codes.length) });
     // 這一頁自己的結果(同一張帳單的另一頁時,要不要文字辨識看這一頁,不看前面幾頁合併的)
     const pageTexts = [];
     const pageLayouts = [];
     const pageResult = () => mergeScan(codes, pageTexts, undefined, pageLayouts);
-    // 條碼已經有金額和截止日、只缺帳號時,也跑一次文字辨識,看帳單上有沒有寫轉帳帳號
-    if (!scanComplete(pageResult()) || !field('accountNo').value) {
+    const addTexts = (texts, layouts, labels) => {
+      pageTexts.push(...texts);
+      pageLayouts.push(...layouts);
+      scan.texts.push(...texts);
+      scan.layouts.push(...layouts);
+      scan.labels.push(...labels);
+    };
+    if (pdfPages?.some((pg) => pg.hasText)) {
+      // PDF 裡本來就有文字:直接用,不用辨識(又快又準)
+      const pages = pdfPages.map((pg, i) => ({ ...pg, n: i + 1 })).filter((pg) => pg.hasText);
+      addTexts(pages.map((pg) => pg.text), pages.map((pg) => pg.layout), pages.map((pg) => `PDF 文字・第 ${pg.n} 頁`));
+      step('ocr', { state: 'done', label: '讀文字', note: '直接讀 PDF 裡的文字(不用辨識)' });
+    } else if (!scanComplete(pageResult()) || !field('accountNo').value) {
+      // 條碼已經有金額和截止日、只缺帳號時,也跑一次文字辨識,看帳單上有沒有寫轉帳帳號
       const reason = ocrReason(bc);
       step('ocr', { state: 'active', note: reason });
       try {
-        const { texts, layouts, labels, errors: ocrErrors } = await readText(file, {
+        const { texts, layouts, labels, errors: ocrErrors } = await readText(images[0], {
           timings: scan.timings,
           isEnough: (t, l) => scanComplete(mergeScan(codes, t, undefined, l)),
           onProgress: (p) => step('ocr', ocrProgress(p)),
         });
-        pageTexts.push(...texts);
-        pageLayouts.push(...layouts);
-        scan.texts.push(...texts);
-        scan.layouts.push(...layouts);
-        scan.labels.push(...labels);
+        addTexts(texts, layouts, labels);
         scan.errors.push(...ocrErrors);
         step('ocr', { state: 'done', note: reason, progress: null });
       } catch (err) {

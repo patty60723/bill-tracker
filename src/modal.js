@@ -37,17 +37,26 @@ export function ask({ title, message = '', actions, cancelValue = null, stacked 
       dlg.remove();
       resolve(value);
     };
+    // value 可以是函式:按下時才算(例如讀對話框裡輸入框的值)
+    const valueOf = (a) => (typeof a.value === 'function' ? a.value(dlg) : a.value);
     dlg.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-i]');
-      if (btn) finish(actions[Number(btn.dataset.i)].value);
+      if (btn) finish(valueOf(actions[Number(btn.dataset.i)]));
       else if (e.target === dlg) finish(cancelValue); // 點到對話框外面(backdrop)
     });
     dlg.addEventListener('cancel', (e) => { e.preventDefault(); finish(cancelValue); });
+    // 在輸入框按 Enter:等於按主要按鈕
+    dlg.querySelector('form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const primary = actions.find((a) => a.kind === 'primary');
+      if (primary) finish(valueOf(primary));
+    });
     document.body.append(dlg);
     dlg.showModal();
-    // 危險動作時,預設焦點放在「取消」那一顆,避免誤按 Enter
+    // 有輸入框就先聚焦輸入框;危險動作時,預設焦點放在「取消」那一顆,避免誤按 Enter
+    const input = dlg.querySelector('input');
     const safe = actions.findIndex((a) => a.value === cancelValue);
-    dlg.querySelector(`[data-i="${safe >= 0 ? safe : 0}"]`)?.focus();
+    (input || dlg.querySelector(`[data-i="${safe >= 0 ? safe : 0}"]`))?.focus();
   });
 }
 
@@ -80,4 +89,17 @@ export function copyDialog({ title, text }) {
   });
   document.querySelector('dialog.modal:last-of-type .modal-copy')?.select();
   return p;
+}
+
+/** 輸入密碼(PDF 電子帳單):回傳輸入的字串,取消回傳 null。 */
+export function passwordDialog({ title, message, ok = '開啟' }) {
+  return ask({
+    title,
+    message,
+    extra: '<input type="password" class="modal-input" autocomplete="off" autocapitalize="characters" aria-label="密碼">',
+    actions: [
+      { label: '取消', value: null },
+      { label: ok, value: (dlg) => dlg.querySelector('input').value, kind: 'primary' },
+    ],
+  });
 }

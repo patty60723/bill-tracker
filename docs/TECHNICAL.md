@@ -308,6 +308,23 @@ canvas 呼叫 `detectCanvas()`;讀到新條碼就震動、更新清單(✅ 截�
   第一次開 app 時它還沒接手)。`paddleDownloaded` 檢查每個檔案都在快取裡;`removePaddle` 從所有快取刪掉。
   `VENDOR_CACHE` 的名字放在 `src/version.js`,`sw.js` 和頁面共用。
 
+#### PDF 電子帳單(`src/pdf.js`)
+
+`isPdf(file)` 時不跑照片流程:pdf.js(`vendor/pdfjs/`,**legacy build**:一般版用了 `Map.getOrInsertComputed`,
+很多手機瀏覽器和測試用的 Chromium 都還沒有)讀前 3 頁:
+- 每頁畫成長邊 3000 px 的 PNG(白底),給 `readBarcodes`;PDF 的條碼是向量,畫大後很清楚。
+- `getTextContent()` 的每個文字項目用 `Util.transform(viewport.transform, item.transform)` 換成畫面座標
+  (y 是基線,高度取 `hypot(c, d)`,寬度乘上 `viewport.scale`),交給 `paddle.js` 的 `toLines` 排成行,
+  輸出跟 OCR 一樣的 `{ text, layout }`,所以依位置找值照常可用。
+- 一頁去空白後 ≥ 30 字才算有文字層;有文字的頁面直接當作「文字辨識」的結果(標「PDF 文字・第 n 頁」),
+  不跑 OCR。全部沒有文字(掃描檔)時,把第一頁的圖交給 `readText`。
+- 中文 CID 字型要 `cMapUrl: vendor/pdfjs/cmaps/`(`cMapPacked`),圖片色彩 / JPEG 2000 / JBIG2 要 `wasmUrl`。
+- 密碼:`task.onPassword(update, reason)` → `passwordDialog`(輸入錯 `reason === INCORRECT_PASSWORD` 時標題改「密碼不對」);
+  取消就 `task.destroy()`,`readPdf` 回傳 null,表單不加任何檔案。pdf.js 6 沒有 `doc.destroy()`,用 `task.destroy()`。
+- 原本的 PDF 存進繳費單照片(`compressImage` 對非圖片原樣保存)。
+- 測試用 PDF(`tests/fixtures/pdf/`,假資料):Chromium `page.pdf()` 產生一般版與掃描檔(只有圖片),
+  pikepdf 加密成有密碼的版本(密碼 `A123456789`)。
+
 #### Tesseract(備援)
 
 - Tesseract.js 5.1.1,語言 `chi_tra+eng`,OEM 1(LSTM only)。`workerPath`、`corePath`、`langPath`
@@ -814,6 +831,7 @@ node 端用 `tesseract.js` + `sharp`,對同一組合成困難帳單比較原圖 
 | tesseract.js-core | 5.1.1 | Apache-2.0 | `vendor/tesseract/tesseract-core{,-simd}-lstm.wasm.js` | 複製 LSTM 兩個版本 |
 | 辨識資料 | 4.0.0_best_int | Apache-2.0 | `vendor/tesseract/{chi_tra,eng}.traineddata.gz` | `@tesseract.js-data/<lang>` |
 | onnxruntime-web | 1.30.0 | MIT | `vendor/paddle/ort.wasm.min.mjs`、`ort-wasm-simd-threaded.{mjs,wasm}` | `npm pack onnxruntime-web@x`,複製 `dist/` 這三個檔 |
+| pdf.js(pdfjs-dist,legacy build) | 6.4.299 | Apache-2.0 | `vendor/pdfjs/` | `npm pack pdfjs-dist@x`,複製 `legacy/build/pdf{,.worker}.min.mjs`、`cmaps/*.bcmap`、`wasm/{qcms_bg,openjpeg,jbig2}.wasm` 與授權檔 |
 | PaddleOCR PP-OCRv5 mobile(ONNX) | onnxocr 4.0.0 | Apache-2.0 | `vendor/paddle/ppocrv5_{det,rec}.onnx`、`ppocrv5_dict.txt` | PyPI `onnxocr` wheel 的 `onnxocr/models/ppocrv5/`(Hugging Face 在開發環境被擋) |
 
 更新後記得把 `src/version.js` 的 `VERSION` 加一、`sw.js` 的 `VENDOR_CACHE` 也改名(vendor 檔案是 cache-first),並重跑 `npm test` 與掃描相關的端對端驗證。

@@ -177,6 +177,70 @@ test('帳單寫著轉帳代繳:存成固定繳費時預設自動扣款', async (
   await context.close();
 });
 
+const pdfFile = (name) => ({ name, mimeType: 'application/pdf', buffer: fs.readFileSync(path.join(FIXTURES, '../pdf', name)) });
+
+test('PDF 電子帳單:直接讀 PDF 裡的文字(不用辨識),條碼從畫出來的頁面讀', async () => {
+  const { page, context, errors } = await newBillPage();
+  await page.setInputFiles('#pick-input', pdfFile('ebill.pdf'));
+  await waitScan(page);
+  assert.equal(await value(page, 'amount'), '1286');
+  assert.equal(await value(page, 'dueDate'), '2026-10-27');
+  assert.equal(await value(page, 'accountNo'), '9999000011112222');
+  assert.equal(await value(page, 'bankCode'), '822');
+  const detail = await page.textContent('.scan-detail pre');
+  assert.match(detail, /文字辨識 #1\(PDF 文字・第 1 頁\)/);
+  assert.doesNotMatch(detail, /PaddleOCR/);
+  assert.match(detail, /151027K6A/); // 條碼
+  assert.equal(await page.$$eval('#bill-files .file', (e) => e.length), 1); // 存原本的 PDF
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('PDF 有密碼:輸入錯會再問一次;取消就不加任何東西', async () => {
+  const { page, context, errors } = await newBillPage();
+  await page.setInputFiles('#pick-input', pdfFile('ebill-locked.pdf'));
+  await page.waitForSelector('dialog.modal[open] >> text=這個 PDF 有密碼');
+  await page.fill('dialog.modal[open] input', 'WRONG');
+  await page.press('dialog.modal[open] input', 'Enter');
+  await page.waitForSelector('dialog.modal[open] >> text=密碼不對');
+  await page.fill('dialog.modal[open] input', 'A123456789');
+  await modalClick(page, '開啟');
+  await waitScan(page);
+  assert.equal(await value(page, 'amount'), '1286');
+
+  await page.goto(`${server.url}#/`);
+  await modalClick(page, '離開,不儲存');
+  await page.goto(`${server.url}#/bill/new`);
+  await page.waitForSelector('#scan-btn');
+  await page.setInputFiles('#pick-input', pdfFile('ebill-locked.pdf'));
+  await modalClick(page, '取消');
+  await page.waitForFunction(() => /已取消/.test(document.querySelector('#toast')?.textContent || ''));
+  assert.equal(await page.$$eval('#bill-files .file', (e) => e.length), 0);
+  assert.equal(await value(page, 'amount'), '');
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('壞掉的 PDF:說明讀不出來,不加照片', async () => {
+  const { page, context, errors } = await newBillPage();
+  await page.setInputFiles('#pick-input', { name: 'bad.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 not really') });
+  await page.waitForFunction(() => /讀不出這個 PDF/.test(document.querySelector('#scan-status')?.textContent || ''));
+  assert.equal(await page.$$eval('#bill-files .file', (e) => e.length), 0);
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('掃描成 PDF(只有圖片):改用文字辨識', async () => {
+  const { page, context, errors } = await newBillPage();
+  await page.setInputFiles('#pick-input', pdfFile('scanned.pdf'));
+  await waitScan(page);
+  assert.equal(await value(page, 'amount'), '1286');
+  assert.equal(await value(page, 'dueDate'), '2026-10-27');
+  assert.match(await page.textContent('.scan-detail pre'), /文字辨識 #1\(PaddleOCR/);
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
 test('稅單 QR:繳款類別、銷帳編號、金額;截止日往前 3 天,條碼日期寫進備註', async () => {
   const { page, context, errors } = await newBillPage();
   await pick(page, 'tax.jpg', await paperWithImage(page, 'tax-qr.png'));

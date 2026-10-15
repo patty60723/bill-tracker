@@ -217,7 +217,7 @@ async function recognize(e, bmp, b) {
 }
 
 /** 文字框依位置排成行(垂直重疊超過一半算同一行),格式跟 scan.js 的 layoutLines 一樣。 */
-function toLines(words) {
+export function toLines(words) {
   const lines = [];
   for (const w of [...words].sort((a, b) => (a.y0 + a.y1) - (b.y0 + b.y1))) {
     const line = lines.find((l) => Math.min(l.y1, w.y1) - Math.max(l.y0, w.y0) > 0.5 * Math.min(l.y1 - l.y0, w.y1 - w.y0));

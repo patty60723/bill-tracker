@@ -29,6 +29,7 @@
 - 條碼讀到一段、另外幾段沒讀到時,會把那一欄放大重掃;條碼都沒讀到,也會用文字辨識讀到的「條碼下方數字」補截止日。
 - 台電等帳單:條碼日期是「代收截止日」時,截止日改用帳單上的「繳費期限」,代收截止日寫進備註。
 - 帳單上寫「轉帳代繳 / 自動扣繳」:勾「同時存成固定繳費」時預設「自動扣款」(到截止日自動記成已繳,不提醒去繳)。
+- **PDF 電子帳單**:「從相簿選」可以選 PDF。有文字的 PDF 直接讀文字(不用辨識,又快又準),條碼從畫成大圖的頁面讀;有密碼的會問密碼(通常是身分證字號);掃描成 PDF 的(只有圖片)改用文字辨識。原本的 PDF 會存在帳單裡。
 - 「已包含在信用卡帳單裡」:由信用卡扣款、而且信用卡帳單也有記的(例如電信費),勾了之後月統計、年度統計不重複計算,另外列出金額;帳單照樣提醒、記已繳。固定繳費勾了,之後每期都跟著。掃描時讀到「信用卡…扣款」會提示可以勾。
 - 同一張帳單分好幾頁(例如台灣大哥大的電信費和代收費用、正反面):掃第二頁時選「同一張帳單的另一頁」,兩頁金額不同會問要不要加總,明細寫進備註。
 - 認得常見帳單種類(台電、水費、電信、瓦斯、信用卡、管理費、稅單),帶入名稱和類別,金額看該種帳單正確的欄位;從標題讀帳單月份,從計費期間的天數判斷每月/雙月。
@@ -133,6 +134,7 @@ GitHub Actions(`.github/workflows/test.yml`)在每次 push / PR 自動跑 lint�
 | `src/schedule.js` | 固定繳費週期、提醒清單、自動扣款、月統計 |
 | `src/parse.js` | 條碼 / 稅單 QR / OCR 文字 → 金額、截止日、帳號、帳單月份 |
 | `src/scan.js` | 讀條碼(BarcodeDetector + zxing-wasm)、OCR(先 PaddleOCR,備援 Tesseract.js) |
+| `src/pdf.js` | PDF 電子帳單:pdf.js 讀文字(含位置)、頁面畫成圖片、密碼 |
 | `src/paddle.js` | PaddleOCR(PP-OCRv5)在瀏覽器跑:文字偵測、逐框辨識、排成行 |
 | `src/profiles.js` | 帳單種類規則、認出固定繳費 |
 | `src/ui/scan-view.js` | 掃描步驟進度、結果卡片、辨識細節的畫面 |
@@ -148,7 +150,7 @@ GitHub Actions(`.github/workflows/test.yml`)在每次 push / PR 自動跑 lint�
 | `tests/logic.test.mjs` | 單元測試 |
 | `tests/e2e/` | 端對端測試(Playwright):掃描、表單、各功能 |
 | `tests/fixtures/` | 真實帳單的 OCR 輸出(個資與號碼已換成假的)、合成的測試圖片 |
-| `vendor/` | [zxing-wasm](https://github.com/Sec-ant/zxing-wasm) 2.2.4 reader(MIT);`vendor/tesseract/`:[Tesseract.js](https://github.com/naptha/tesseract.js) 5.1.1 + core(Apache-2.0)與 chi_tra / eng 辨識資料(約 12 MB,備援用);`vendor/paddle/`:onnxruntime-web 1.30(MIT)+ PaddleOCR PP-OCRv5 mobile 模型(Apache-2.0,約 22 MB);都是第一次 OCR 才下載 |
+| `vendor/` | [zxing-wasm](https://github.com/Sec-ant/zxing-wasm) 2.2.4 reader(MIT);`vendor/tesseract/`:[Tesseract.js](https://github.com/naptha/tesseract.js) 5.1.1 + core(Apache-2.0)與 chi_tra / eng 辨識資料(約 12 MB,備援用);`vendor/paddle/`:onnxruntime-web 1.30(MIT)+ PaddleOCR PP-OCRv5 mobile 模型(Apache-2.0,約 22 MB);`vendor/pdfjs/`:pdf.js 6.4 legacy 版(Apache-2.0,約 3.7 MB);都是第一次用到才下載 |
 
 ## 已知限制
 
@@ -200,7 +202,8 @@ GitHub Actions(`.github/workflows/test.yml`)在每次 push / PR 自動跑 lint�
 - [ ] 照片傾斜時,PaddleOCR 的軸對齊文字框會把很密的小字相鄰兩行框在一起(例如管理費單的繳費說明欄),
   可改用旋轉框或先做傾斜校正。目前主要欄位不受影響。
 - [ ] 手機上文字辨識若仍嫌慢,可試 WebGPU(目前 WASM 多執行緒已夠快,先不做)。
-- [ ] 手機截圖(1080 寬)的條碼太細讀不到,只能靠文字辨識;可考慮提示使用者改傳 PDF 或原圖。
+- [x] PDF 電子帳單(直接讀文字、有密碼的會問、掃描檔改用文字辨識)
+- [ ] 手機截圖(1080 寬)的條碼太細讀不到,只能靠文字辨識;有 PDF 的話改選 PDF。
 
 ### 技術債
 
@@ -212,4 +215,4 @@ GitHub Actions(`.github/workflows/test.yml`)在每次 push / PR 自動跑 lint�
 - [ ] `pages/bill-form.js`(約 545 行)還可以再把掃描流程拆出去。
 - [ ] Service worker 以 module 註冊,Firefox 不支援時只會失去離線與背景提醒(app 仍可用),
   可考慮打包成單一 classic script。
-- [ ] `vendor/` 約 48 MB(PaddleOCR 35 MB + Tesseract 13 MB + zxing),如果之後確定不再需要 Tesseract 備援,可以拿掉。
+- [ ] `vendor/` 約 52 MB(pdf.js 3.7 MB、PaddleOCR 35 MB + Tesseract 13 MB + zxing),如果之後確定不再需要 Tesseract 備援,可以拿掉。
