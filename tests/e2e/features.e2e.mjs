@@ -266,3 +266,29 @@ test('預先下載文字辨識:下載進快取、顯示已下載、刪除後恢�
   assert.deepEqual(errors, []);
   await context.close();
 });
+
+test('已包含在信用卡帳單裡:月統計、年度統計不重複計算;固定繳費的設定帶到新帳單', async () => {
+  const { page, context, errors } = await openPage(browser, server.url);
+  await seed(page, server.url, {
+    templates: [{ id: 'tw', name: '台灣大哥大', category: 'telecom', cycleMonths: 1, anchorMonth: 1, arrivalDay: 12, dueDay: 2, remindDays: 3, active: true, inCardBill: true, createdAt: '2026-01-01T00:00:00Z' }],
+    bills: [
+      { id: 'c', name: '信用卡', category: 'card', period: '2026-10', amount: 20000, dueDate: '2026-10-25', status: 'unpaid' },
+      { id: 't', name: '台灣大哥大', category: 'telecom', period: '2026-10', amount: 3893, dueDate: '2026-11-02', status: 'paid', inCardBill: true },
+    ],
+  });
+  await page.goto(`${server.url}#/bills?month=2026-10`);
+  await page.waitForSelector('.stats');
+  assert.match(await page.textContent('.stats'), /總額\$20,000/);
+  assert.match(await page.textContent('.card-note'), /另有 \$3,893\(1 筆\)已包含在信用卡帳單裡/);
+  assert.match(await page.textContent('.bill-row:has-text("台灣大哥大")'), /含在信用卡帳單/);
+  await page.goto(`${server.url}#/bills?view=stats&year=2026`);
+  await page.waitForSelector('.bar-chart');
+  assert.match(await page.textContent('.stats'), /全年總額\$20,000/);
+  assert.match(await page.textContent('.card-note'), /\$3,893/);
+  // 從固定繳費新增下一期:勾選狀態跟著固定繳費
+  await page.goto(`${server.url}#/bill/new?template=tw&period=2026-11`);
+  await page.waitForSelector('#bill-form');
+  assert.equal(await page.isChecked('[name=inCardBill]'), true);
+  assert.deepEqual(errors, []);
+  await context.close();
+});

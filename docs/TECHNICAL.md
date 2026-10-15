@@ -657,6 +657,15 @@ for 每個 active && autoPay 的 template:
 
 ---
 
+### 已包含在信用卡帳單裡(`inCardBill`)
+
+電信費等由信用卡扣款的帳單,如果信用卡帳單也有記,同一筆錢會算兩次。帳單與固定繳費多一個 `inCardBill`:
+`monthSummary`、`yearStats` 不算它(含去年同期、類別),另外回傳 `cardCount / cardTotal`、`inCardBill.{count,total}`
+在畫面上列一行「另有 $X 已包含在信用卡帳單裡」;CSV 多一欄。帳單本身照樣提醒、記已繳。
+要不要勾取決於使用者有沒有記信用卡帳單,所以**不自動勾**:掃描讀到「信用卡…扣款 / 代繳 / 扣繳」(`CARD_PAY_RE`,
+「信卡」也算,OCR 常漏字;只寫「信用卡…轉帳繳納」的繳費方式說明不算)時只提示。
+固定繳費勾了,從它新增的帳單、自動扣款補記的帳單都會帶上。
+
 ## 9. 通知(`src/notify.js`、`sw.js`)
 
 - `urgentReminders()`:`buildReminders` 中 level 不是 info 的。

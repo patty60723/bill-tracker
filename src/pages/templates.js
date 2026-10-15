@@ -83,6 +83,8 @@ export async function renderTemplateForm(id) {
       <label class="switch"><input type="checkbox" name="active" ${t.active ? 'checked' : ''}> 啟用提醒</label>
       <label class="switch"><input type="checkbox" name="autoPay" ${t.autoPay ? 'checked' : ''}> 自動扣款</label>
       <span class="muted small switch-hint">到截止日自動記成「已繳(自動扣繳)」,不再提醒拿單、繳費。金額先用預估金額,可以再改。</span>
+      <label class="switch"><input type="checkbox" name="inCardBill" ${t.inCardBill ? 'checked' : ''}> 已包含在信用卡帳單裡</label>
+      <span class="muted small switch-hint">用信用卡扣款、而且你也有記那張信用卡帳單時勾選:統計不重複計算(帳單照樣提醒、照樣記已繳)。</span>
       ${accountFields(t)}
       <label>備註 <textarea name="notes" rows="2" placeholder="例如:電號、用戶編號">${esc(t.notes)}</textarea></label>
       <div class="form-actions">
@@ -108,6 +110,7 @@ export async function renderTemplateForm(id) {
     remindDays: Number(form.remindDays.value || 0),
     active: form.active.checked,
     autoPay: form.autoPay.checked,
+    inCardBill: form.inCardBill.checked,
     accountNo: digits(form.elements.namedItem('accountNo').value),
     bankCode: digits(form.elements.namedItem('bankCode').value),
     notes: form.notes.value.trim(),

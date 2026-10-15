@@ -419,6 +419,7 @@ function findCollectCutoff(lines, today) {
   return null;
 }
 
+const CARD_PAY_RE = /信用?卡.{0,20}(?:扣款|代繳|扣繳)/; // 只寫「信用卡…轉帳繳納」的是繳費方式說明(稅單),不算
 const AUTO_PAY_RE = /轉帳代繳|自動扣繳|代扣繳|自動轉帳扣款|委託扣繳|已由您的帳戶扣繳/;
 
 const textLines = (text) => normalizeOcrText(text).split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
@@ -438,6 +439,8 @@ export function parseBillText(text, today = todayISO(), layout = null) {
   if (!result.cycleMonths) Object.assign(result, findCycleFromRange(lines));
   // 自動扣款的帳單(台灣大哥大「繳款方式 轉帳代繳」、各家「自動扣繳」)
   if (AUTO_PAY_RE.test(lines.join('\n'))) result.autoPay = true;
+  // 由信用卡扣款(「自您所指定之信用卡…轉帳扣款」)
+  if (CARD_PAY_RE.test(lines.join(''))) result.cardPay = true;
   const cutoff = findCollectCutoff(lines, today);
   if (cutoff) result.collectCutoff = cutoff;
   Object.assign(result, findPayAccount(lines));
@@ -484,6 +487,7 @@ export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO(), layou
     if (!fromText.cycleMonths && r.cycleMonths) fromText.cycleMonths = r.cycleMonths;
     if (!fromText.collectCutoff && r.collectCutoff) fromText.collectCutoff = r.collectCutoff;
     if (r.autoPay) fromText.autoPay = true;
+    if (r.cardPay) fromText.cardPay = true;
     if (r.dueDate && (!fromText.dueDate || (fromText.dueDateGuessed && !r.dueDateGuessed))) {
       fromText.dueDate = r.dueDate;
       fromText.dueDateGuessed = !!r.dueDateGuessed;

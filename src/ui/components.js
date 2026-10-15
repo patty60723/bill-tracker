@@ -67,7 +67,7 @@ export function summaryBlock(s) {
     <div><div class="label">總額</div><div class="value">${money(s.total)}</div></div>
     <div><div class="label">已繳</div><div class="value ok">${money(s.paid)}</div></div>
     <div><div class="label">未繳 (${s.unpaidCount})</div><div class="value ${s.unpaid ? 'bad' : ''}">${money(s.unpaid)}</div></div>
-  </div>`;
+  </div>${s.cardCount ? `<p class="muted small card-note">💳 另有 ${money(s.cardTotal)}(${s.cardCount} 筆)已包含在信用卡帳單裡,不重複計算。</p>` : ''}`;
 }
 
 // ---------- 帳單列表 ----------
@@ -98,6 +98,7 @@ export function billRow(b, t, today) {
             : ['warn', '未繳'];
   const meta = [b.dueDate ? `${formatDate(b.dueDate)} ${b.autoPaid ? '扣款' : '截止'}` : '未填截止日'];
   if (b.autoPaid) meta.push('自動扣款');
+  if (b.inCardBill) meta.push('💳 含在信用卡帳單');
   if (b.cycleMonths > 1) meta.push(`${cycleName(b.cycleMonths)}帳單`);
   const files = [];
   if (b.billFiles?.length) files.push('🧾 有繳費單');

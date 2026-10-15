@@ -242,8 +242,10 @@ test('月統計', () => {
     { period: '2026-10', amount: 100, status: 'paid' },
     { period: '2026-10', amount: 250, status: 'unpaid' },
     { period: '2026-09', amount: 999, status: 'unpaid' },
+    // 已包含在信用卡帳單裡:不算進總額,另外列出
+    { period: '2026-10', amount: 3893, status: 'paid', inCardBill: true },
   ], '2026-10');
-  assert.deepEqual(s, { count: 2, total: 350, paid: 100, unpaid: 250, unpaidCount: 1 });
+  assert.deepEqual(s, { count: 2, total: 350, paid: 100, unpaid: 250, unpaidCount: 1, cardCount: 1, cardTotal: 3893 });
 });
 
 test('ICS:每個固定繳費兩個重複事件與提醒', () => {
@@ -634,4 +636,25 @@ test('台灣大哥大完整帳單(兩類合計一張):應繳總額 3,893,代收�
   assert.equal(r.autoPay, true);
   assert.equal(r.profile, 'twm');
   assert.equal(r.accountNo, undefined); // 繳款書上的銀行帳號是業者的代收帳戶
+});
+
+test('年度統計:已包含在信用卡帳單裡的不重複計算;掃描認得信用卡扣款', async () => {
+  const { yearStats, billsToCSV } = await import('../src/stats.js');
+  const bills = [
+    { period: '2026-10', amount: 3893, status: 'paid', category: 'telecom', inCardBill: true },
+    { period: '2026-11', amount: 20000, status: 'unpaid', category: 'card' },
+    { period: '2025-10', amount: 3000, status: 'paid', category: 'telecom', inCardBill: true },
+  ];
+  const s = yearStats(bills, 2026);
+  assert.equal(s.total, 20000);
+  assert.equal(s.count, 1);
+  assert.deepEqual(s.inCardBill, { count: 1, total: 3893 });
+  assert.equal(s.byCategory.find((c) => c.category === 'telecom'), undefined);
+  assert.equal(s.prevTotal, 0); // 去年那筆也是信用卡代扣
+  assert.match(billsToCSV(bills.slice(0, 1)), /,是,/);
+  // 「自您所指定之信用卡…轉帳扣款」(OCR 常漏掉「用」)
+  assert.equal(parseBillText('本期應繳額將於115/11/02,您所指定之信卡400000*****1234轉帳扣款', '2026-10-15').cardPay, true);
+  assert.equal(parseBillText('繳費方式:超商、ATM', '2026-10-15').cardPay, undefined);
+  // 稅單的繳費方式說明不是「由信用卡扣款」
+  assert.equal(parseBillText('五、使用信用卡(授權繳納成功後,不得取消或更正)或轉帳繳納者,請鍵入以下資料', '2026-10-15').cardPay, undefined);
 });

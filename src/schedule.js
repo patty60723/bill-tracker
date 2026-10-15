@@ -99,12 +99,18 @@ export function buildReminders(templates, bills, today) {
   return items.sort((a, b) => LEVEL_ORDER[a.level] - LEVEL_ORDER[b.level] || a.date.localeCompare(b.date));
 }
 
+/** 某個月的總額 / 已繳 / 未繳。「已包含在信用卡帳單裡」的不算,另外回傳 cardCount / cardTotal。 */
 export function monthSummary(bills, key) {
-  const list = bills.filter((b) => b.period === key);
+  const month = bills.filter((b) => b.period === key);
+  const list = month.filter((b) => !b.inCardBill);
+  const viaCard = month.filter((b) => b.inCardBill);
   const sum = (arr) => arr.reduce((s, b) => s + (Number(b.amount) || 0), 0);
   const paid = list.filter((b) => b.status === 'paid');
   const unpaid = list.filter((b) => b.status !== 'paid');
-  return { count: list.length, total: sum(list), paid: sum(paid), unpaid: sum(unpaid), unpaidCount: unpaid.length };
+  return {
+    count: list.length, total: sum(list), paid: sum(paid), unpaid: sum(unpaid), unpaidCount: unpaid.length,
+    cardCount: viaCard.length, cardTotal: sum(viaCard),
+  };
 }
 
 export const CYCLES = [[1, '單月'], [2, '雙月'], [3, '每季'], [6, '半年'], [12, '每年']];
@@ -173,7 +179,7 @@ export function planAutoPay(templates, bills, today) {
         create.push({
           name: t.name, templateId: t.id, category: t.category || 'other', period,
           cycleMonths: t.cycleMonths || 1, amount: t.amount ?? '', dueDate: due,
-          accountNo: t.accountNo || '', bankCode: t.bankCode || '',
+          accountNo: t.accountNo || '', bankCode: t.bankCode || '', inCardBill: !!t.inCardBill,
           status: 'paid', paidDate: due, paidMethod: AUTO_PAY_METHOD, autoPaid: true,
           notes: '', billFiles: [], proofFiles: [],
         });

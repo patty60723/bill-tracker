@@ -25,7 +25,7 @@ export async function renderBillForm(id, params) {
     bill = {
       id: db.uid(), name: t?.name || '', templateId: t?.id || '', category: t?.category || 'other',
       period, cycleMonths: t?.cycleMonths || 1, amount: t?.amount ?? '', dueDate: t ? periodDates(t, period).due : '',
-      accountNo: t?.accountNo || '', bankCode: t?.bankCode || '',
+      accountNo: t?.accountNo || '', bankCode: t?.bankCode || '', inCardBill: !!t?.inCardBill,
       status: 'unpaid', paidDate: '', paidMethod: '', notes: '', billFiles: [], proofFiles: [],
     };
   } else {
@@ -117,6 +117,8 @@ export async function renderBillForm(id, params) {
         </div>
       </fieldset>
 
+<label class="switch"><input type="checkbox" name="inCardBill" ${bill.inCardBill ? 'checked' : ''}> 已包含在信用卡帳單裡</label>
+      <span class="muted small switch-hint">用信用卡扣款、而且你也有記那張信用卡帳單時勾選:統計不重複計算(帳單照樣提醒、照樣記已繳)。</span>
       <label>備註 <textarea name="notes" rows="2">${esc(bill.notes)}</textarea></label>
 
       <div class="form-actions">
@@ -149,6 +151,7 @@ export async function renderBillForm(id, params) {
     autoPayFrom: field('autoPay').checked ? todayISO() : '',
     accountNo: digits(field('accountNo').value),
     bankCode: digits(field('bankCode').value),
+    inCardBill: field('inCardBill').checked,
     active: true,
     notes: '',
   });
@@ -203,6 +206,7 @@ export async function renderBillForm(id, params) {
       set('bankCode', t.bankCode || '');
     }
     if (!field('dueDate').value && field('period').value) set('dueDate', periodDates(t, field('period').value).due);
+    if (t.inCardBill) set('inCardBill', true);
   }
 
   form.addEventListener('change', async (e) => {
@@ -519,6 +523,10 @@ export async function renderBillForm(id, params) {
         notes.push(`🔄 帳單上寫著自動扣款(轉帳代繳),可以到「固定繳費」把「${esc(tpl.name)}」設成自動扣款,截止日會自動記成已繳。`);
       }
     }
+    // 由信用卡扣款:提醒可以勾「已包含在信用卡帳單裡」(要不要勾看使用者有沒有記信用卡帳單,不自動勾)
+    if (r.cardPay && !field('inCardBill').checked) {
+      notes.push('💳 這筆由信用卡扣款。如果你也有記那張信用卡帳單,可以勾下面的「已包含在信用卡帳單裡」,統計就不會算兩次。');
+    }
     if (r.source.dueDate === 'guess') warnings.push('⚠️ 帳單上沒找到「繳費期限」之類的字,截止日是用帳單上最晚的日期<b>推測</b>的,請一定要核對。');
     const LOW_RES = 2000; // 長邊少於這個,條碼和小字很容易讀不到
     if (scan.size && Math.max(scan.size.width, scan.size.height) < LOW_RES) {
@@ -565,6 +573,7 @@ export async function renderBillForm(id, params) {
       paidMethod: paid ? fd.get('paidMethod') : '',
       accountNo: digits(fd.get('accountNo')),
       bankCode: digits(fd.get('bankCode')),
+      inCardBill: fd.get('inCardBill') === 'on',
       notes: fd.get('notes').trim(),
       updatedAt: new Date().toISOString(),
       createdAt: bill.createdAt || new Date().toISOString(),

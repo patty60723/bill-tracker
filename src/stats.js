@@ -4,6 +4,12 @@
 const num = (v) => Number(v) || 0;
 
 /**
+ * 「已包含在信用卡帳單裡」的帳單(例如電信費由信用卡扣款,信用卡帳單也有記):
+ * 統計不算它,免得同一筆錢算兩次。帳單本身照樣提醒、照樣記已繳。
+ */
+export const inTotals = (b) => !b.inCardBill;
+
+/**
  * 某一年的統計。
  * @returns {{
  *   year, count, total, paid, unpaid, monthsWithBills, monthlyAvg,
@@ -17,8 +23,10 @@ const num = (v) => Number(v) || 0;
 export function yearStats(bills, year, throughMonth = 12) {
   const inYear = (y) => bills.filter((b) => b.period?.startsWith(`${y}-`));
   const upTo = (b) => Number(b.period.slice(5, 7)) <= throughMonth;
-  const list = inYear(year);
-  const prev = inYear(year - 1).filter(upTo);
+  const all = inYear(year);
+  const list = all.filter(inTotals);
+  const viaCard = all.filter((b) => !inTotals(b));
+  const prev = inYear(year - 1).filter(upTo).filter(inTotals);
 
   const byMonth = Array.from({ length: 12 }, (_, i) => ({ month: i + 1, total: 0, paid: 0, count: 0 }));
   for (const b of list) {
@@ -62,6 +70,7 @@ export function yearStats(bills, year, throughMonth = 12) {
     compareTotal,
     prevTotal,
     change: prevTotal > 0 ? (compareTotal - prevTotal) / prevTotal : null,
+    inCardBill: { count: viaCard.length, total: viaCard.reduce((s, b) => s + num(b.amount), 0) },
   };
 }
 
@@ -105,6 +114,7 @@ const CSV_COLUMNS = [
   ['帳號/銷帳編號', (b) => b.accountNo],
   ['繳費單照片數', (b) => b.billFiles?.length || 0],
   ['繳費證明數', (b) => b.proofFiles?.length || 0],
+  ['已含在信用卡帳單', (b) => (b.inCardBill ? '是' : '')],
   ['備註', (b) => b.notes],
 ];
 

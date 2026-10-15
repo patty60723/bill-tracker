@@ -156,6 +156,7 @@ export function statsView(bills, year) {
       <div><div class="label">月平均</div><div class="value">${money(s.monthlyAvg)}</div></div>
     </div>
     <p class="yoy small">${change}</p>
+    ${s.inCardBill.count ? `<p class="muted small card-note">💳 另有 ${money(s.inCardBill.total)}(${s.inCardBill.count} 筆)已包含在信用卡帳單裡,不重複計算。</p>` : ''}
     <section class="card col chart-card">
       <h3>每月金額</h3>
       <div class="bar-chart" role="group" aria-label="${year} 年每月繳費金額">${bars}</div>
