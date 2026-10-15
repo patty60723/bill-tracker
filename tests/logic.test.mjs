@@ -601,3 +601,20 @@ test('水費(真實 PaddleOCR 輸出,個資已換):條碼日期是代收期限,�
     assert.equal(r.accountNo, '12171234567890'); // 銷帳編號
   }
 });
+
+test('台灣大哥大(電信費 + 代收費用兩頁):信用卡號不是金額、扣款說明不是金額欄位、認得業者', async () => {
+  const fs = await import('node:fs');
+  const read = (f) => fs.readFileSync(new URL(`./fixtures/${f}`, import.meta.url), 'utf8');
+  const telecom = mergeScan([], [read('twm-telecom.txt')], '2026-10-15');
+  assert.equal(telecom.amount, 2495); // 不是信用卡號 400000、不是「5G 1599 手機案」
+  assert.equal(telecom.dueDate, '2026-11-02');
+  assert.equal(telecom.period, '2026-10');
+  assert.equal(telecom.cycleMonths, 1);
+  assert.equal(telecom.profile, 'twm'); // 「信用卡」出現好幾次也不是信用卡帳單
+  const collect = mergeScan([], [read('twm-collect.txt')], '2026-10-15');
+  assert.equal(collect.amount, 1398);
+  assert.equal(collect.period, '2026-10'); // 「115年10月 代收費用帳單」
+  assert.equal(collect.category, 'telecom'); // 沒寫業者名稱:通用的電信費
+  // 台電的「****2219」是金額(星號補位),不是遮罩號碼
+  assert.equal(parseBillText('應繳總金額\n****2,219 元', '2026-09-20').amount, 2219);
+});

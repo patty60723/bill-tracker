@@ -26,6 +26,7 @@ const SOURCE = {
   ocr: ['文字', 'src-ocr'],
   guess: ['推測', 'src-guess'],
   template: ['固定繳費', 'src-template'],
+  sum: ['多頁加總', 'src-template'],
 };
 
 /**

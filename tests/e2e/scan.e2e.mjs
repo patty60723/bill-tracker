@@ -145,6 +145,25 @@ test('結果畫面:欄位卡片標出來源;開發者模式關閉時不顯示辨
   await context.close();
 });
 
+test('同一張帳單的另一頁:兩頁金額不同時可以加總,明細寫進備註', async () => {
+  const { page, context, errors } = await newBillPage();
+  await pick(page, 'p1.jpg', await barcodeBill(page, ['151102K6A', '1510AB000002495']));
+  await waitScan(page);
+  assert.equal(await value(page, 'amount'), '2495');
+  await page.evaluate(() => { document.querySelector('#scan-status').textContent = ''; });
+  await pick(page, 'p2.jpg', await barcodeBill(page, ['151102K6A', '1510AB000001398']));
+  await modalClick(page, '同一張帳單的另一頁');
+  await page.waitForSelector('dialog.modal[open] >> text=這一頁也有金額', { timeout: 120000 });
+  await modalClick(page, '加總');
+  await waitScan(page);
+  assert.equal(await value(page, 'amount'), '3893');
+  assert.equal((await cards(page))['金額'], '$3,893 多頁加總');
+  assert.match(await value(page, 'notes'), /2 頁加總:\$2,495 \+ \$1,398 = \$3,893/);
+  assert.equal(await page.$$eval('#bill-files .file', (e) => e.length), 2); // 兩頁照片都留著
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
 test('稅單 QR:繳款類別、銷帳編號、金額;截止日往前 3 天,條碼日期寫進備註', async () => {
   const { page, context, errors } = await newBillPage();
   await pick(page, 'tax.jpg', await paperWithImage(page, 'tax-qr.png'));

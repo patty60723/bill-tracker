@@ -26,9 +26,12 @@ export const PROFILES = [
   { id: 'cht', name: '中華電信', category: 'telecom', label: '中華電信', match: /中華電信/g, cycleMonths: 1 },
   { id: 'twm', name: '台灣大哥大', category: 'telecom', label: '台灣大哥大', match: /台灣大哥大|臺灣大哥大/g, cycleMonths: 1 },
   { id: 'fet', name: '遠傳電信', category: 'telecom', label: '遠傳電信', match: /遠傳/g, cycleMonths: 1 },
+  // 沒寫業者名稱的電信帳單(例如台灣大哥大的「代收費用帳單」那一頁)。generic:有認出其他種類就不用它
+  { id: 'telecom', name: '電信費', category: 'telecom', label: '電信費', match: /電信費|電信帳單|代收費用帳單|月租費|基本月費/g, cycleMonths: 1, generic: true },
   { id: 'gas', name: '瓦斯費', category: 'gas', label: '瓦斯費', match: /天然氣|瓦斯/g },
   {
-    id: 'card', name: '信用卡', category: 'card', label: '信用卡帳單', match: /信用卡|最低應繳/g, cycleMonths: 1,
+    // 只寫「信用卡」不算:電信費、水電費也常寫「自您指定之信用卡扣款」
+    id: 'card', name: '信用卡', category: 'card', label: '信用卡帳單', match: /信用卡帳單|信用卡對帳單|最低應繳|循環信用|信用額度/g, cycleMonths: 1,
     amountKeywords: ['本期應繳總金額', '本期應繳金額', '應繳總金額'],
   },
   {
@@ -47,16 +50,20 @@ export const profileById = (id) => PROFILES.find((p) => p.id === id) || null;
  */
 export function detectProfile(text, { taxQr = false } = {}) {
   if (taxQr) return profileById('tax');
-  let best = null;
-  let bestCount = 0;
-  for (const p of PROFILES) {
-    const count = (text.match(p.match) || []).length;
-    if (count > bestCount) {
-      best = p;
-      bestCount = count;
+  const pick = (list) => {
+    let best = null;
+    let bestCount = 0;
+    for (const p of list) {
+      const count = (text.match(p.match) || []).length;
+      if (count > bestCount) {
+        best = p;
+        bestCount = count;
+      }
     }
-  }
-  return best;
+    return best;
+  };
+  // 有認出業者(台灣大哥大)就用業者的,不用「電信費」這種通用的
+  return pick(PROFILES.filter((p) => !p.generic)) || pick(PROFILES.filter((p) => p.generic));
 }
 
 /**

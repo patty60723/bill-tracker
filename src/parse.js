@@ -89,11 +89,12 @@ const DUE_KEYWORDS = [
   '代收期限', '截止日期', '截止日', '到期日', '繳費日期', '期限',
 ];
 const AMOUNT_KEYWORDS = [
-  '本期應繳總金額', '本期應繳金額', '應繳總金額', '應繳金額', '本期應付金額', '應付總金額', '應付金額',
+  '本期應繳總金額', '本期應繳金額', '應繳總金額', '應繳總額', '應繳金額', '本期應付金額', '應付總金額', '應付金額',
   '繳費金額', '繳款金額', '總金額', '合計', '總計', '本期費用', '金額',
   '應繳費用', // 常是明細表的表頭(底下是各項費用),所以排最後
 ];
-const AMOUNT_SKIP = /最低|已繳|上期|前期|預繳|折抵|手續費/;
+// 「本期應繳金額將於115/11/02…轉帳扣款」是扣款說明,不是金額欄位
+const AMOUNT_SKIP = /最低|已繳|上期|前期|預繳|折抵|手續費|將於/;
 
 const escapeRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /**
@@ -282,6 +283,9 @@ function findAmountIn(region) {
   // 關鍵字那一行之後的幾行:拿掉別的欄位的值
   const [first, ...rest] = region.split(' \n ');
   let text = [first, ...rest.map((l) => l.replace(OTHER_LABELED, ' | '))].join(' \n ');
+  // 遮罩過的號碼(信用卡「400000******1234」、門號「09000***00」)不是金額。
+  // 星號前面要有數字:台電把金額寫成「****2219」(星號補位),那是金額
+  text = text.replace(/[\dA-Z]+\*{2,}[\dA-Z]*/g, ' | ');
   // 先取出所有日期字串再刪(邊刪邊用 index 會錯位)
   for (const d of allDates(text).map((x) => text.substr(x.index, x.length))) text = text.replace(d, ' ');
   // OCR 常把千分位看錯:「2,.219」「2.219」→ 2,219(小數點後剛好 3 位,帳單金額不會這樣寫)
@@ -374,7 +378,7 @@ function findPeriodRange(lines) {
 /** 「115 年 09 月 繳費通知單」「繳費月份 115年09月」→ 帳單月份。 */
 function findPeriodMonth(lines) {
   const text = periodLines(lines).join('\n');
-  const m = text.match(/(?<!\d)(\d{3,4})\s*年\s*(\d{1,2})\s*月\s*份?\s*(?:繳費通知|繳費憑證|繳款通知|帳單|電費|水費|管理費|瓦斯|天然氣|電信費)/)
+  const m = text.match(/(?<!\d)(\d{3,4})\s*年\s*(\d{1,2})\s*月\s*份?\s*(?:繳費通知|繳費憑證|繳款通知|帳單|電費|水費|管理費|瓦斯|天然氣|電信費|[^\d\s]{0,6}帳單)/)
     || text.match(/(?:繳費月份|帳單月份|計費月份)\s*[::]?\s*\n?\s*(\d{3,4})\s*年\s*(\d{1,2})\s*月/);
   if (!m) return null;
   const year = normalizeYear(+m[1]);
@@ -387,7 +391,7 @@ function findPeriodMonth(lines) {
  */
 function findCycleFromRange(lines) {
   const text = lines.join('\n');
-  if (!/計費期間|用電期間|抄表/.test(text)) return null;
+  if (!/計費期間|用電期間|列帳期間|帳單期間|抄表/.test(text)) return null;
   const re = /(\d{3,4})\s*[/.-]\s*(\d{1,2})\s*[/.-]\s*(\d{1,2})\s*(?:至|到|~|-)\s*(\d{3,4})\s*[/.-]\s*(\d{1,2})\s*[/.-]\s*(\d{1,2})/;
   const m = text.match(re);
   if (!m) return null;

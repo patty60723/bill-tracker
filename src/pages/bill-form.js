@@ -255,6 +255,7 @@ export async function renderBillForm(id, params) {
   // 掃「另一張」帳單前要先 resetScan(),不然上一張的條碼(例如稅單 QR Code)會一直蓋過新的。
   const newScanState = () => ({
     barcodes: new Set(), texts: [], layouts: [], labels: [], errors: [], size: null, // layouts:每次 OCR 的版面;labels:用的引擎
+    pageAmounts: [], // 每一頁各自讀到的金額(同一張帳單多頁時加總用)
     engines: '', sources: {}, // 診斷用:各條碼引擎的次數/耗時、每個條碼是誰讀到的
     photos: [], // 掃描時加進來的照片 id
     before: {}, // 欄位被掃描改寫前的值
@@ -283,20 +284,44 @@ export async function renderBillForm(id, params) {
     await redrawFiles();
   }
   /** 已經掃過一張時,問這次是「另一張帳單」還是「同一張的另一頁」。回傳 false 代表使用者取消。 */
+  /** 回傳這次掃描的模式:'first'(第一次)、'another'(另一張,已清掉上一張)、'same'(同一張的另一頁),取消回傳 null。 */
   async function startScan() {
-    if (!hasScan()) return true;
+    if (!hasScan()) return 'first';
     const choice = await ask({
       title: '這個表單已經掃過一張了',
       message: '這次要掃的是?',
       stacked: true,
       actions: [
         { label: '另一張帳單', desc: '清掉上一張帶入的資料和照片,重新辨識', value: 'another', kind: 'primary' },
-        { label: '同一張帳單的另一頁', desc: '合併兩次的結果(例如正反面)', value: 'same' },
+        { label: '同一張帳單的另一頁', desc: '合併兩次的結果(例如正反面、電信費和代收費用分兩頁)', value: 'same' },
         { label: '取消', value: null },
       ],
     });
     if (choice === 'another') await resetScan();
-    return choice !== null;
+    return choice;
+  }
+  /**
+   * 同一張帳單的另一頁也有金額、而且跟目前的不一樣:問要加總(多頁是不同的費用,例如台灣大哥大的電信費
+   * 和代收費用分兩頁、拆兩筆扣款)、用這一頁的,還是維持原本的。回傳 { value, source, pages? } 或 null。
+   */
+  async function askPageAmount(pageAmount) {
+    const prev = field('amount').value === '' ? null : Number(field('amount').value);
+    if (pageAmount == null || prev == null || pageAmount === prev) return null;
+    const pages = [...(scan.pageAmounts.length ? scan.pageAmounts : [prev]), pageAmount];
+    const sum = pages.reduce((a, n) => a + n, 0);
+    const choice = await ask({
+      title: '這一頁也有金額',
+      message: `這一頁是 ${money(pageAmount)},前面是 ${money(prev)}。`,
+      stacked: true,
+      actions: [
+        { label: `加總 ${money(sum)}`, desc: `${pages.map(money).join(' + ')}:每一頁是不同的費用`, value: 'sum', kind: 'primary' },
+        { label: `用這一頁的 ${money(pageAmount)}`, desc: '這一頁才是總額', value: 'page' },
+        { label: `維持 ${money(prev)}`, value: 'keep' },
+      ],
+    });
+    if (choice === 'sum') return { value: sum, source: 'sum', pages };
+    if (choice === 'page') return { value: pageAmount, source: 'ocr' };
+    return { value: prev, source: 'keep' };
   }
   const barcodesEnough = (t) => {
     const r = parseConvenienceBarcodes(t);
@@ -335,7 +360,8 @@ export async function renderBillForm(id, params) {
     const file = e.target.files[0];
     e.target.value = '';
     if (!file) return;
-    if (!(await startScan())) return;
+    const mode = await startScan();
+    if (!mode) return;
     scan.size = await imageSize(file);
     scan.screenshot = file.type === 'image/png'; // 手機截圖是 PNG,相機拍的是 JPEG/HEIC
     scan.timings = [];
@@ -355,24 +381,28 @@ export async function renderBillForm(id, params) {
     scan.engines = engines;
     Object.assign(scan.sources, sources);
     scan.errors.push(...errors);
-    const bc = parseConvenienceBarcodes([...scan.barcodes]);
+    const bc = parseConvenienceBarcodes(codes);
     step('barcode', { state: 'done', note: barcodeNote(bc, codes.length) });
-    let result = mergeScan([...scan.barcodes], scan.texts, undefined, scan.layouts);
+    // 這一頁自己的結果(同一張帳單的另一頁時,要不要文字辨識看這一頁,不看前面幾頁合併的)
+    const pageTexts = [];
+    const pageLayouts = [];
+    const pageResult = () => mergeScan(codes, pageTexts, undefined, pageLayouts);
     // 條碼已經有金額和截止日、只缺帳號時,也跑一次文字辨識,看帳單上有沒有寫轉帳帳號
-    if (!scanComplete(result) || !field('accountNo').value) {
+    if (!scanComplete(pageResult()) || !field('accountNo').value) {
       const reason = ocrReason(bc);
       step('ocr', { state: 'active', note: reason });
       try {
         const { texts, layouts, labels, errors: ocrErrors } = await readText(file, {
           timings: scan.timings,
-          isEnough: (t, l) => scanComplete(mergeScan([...scan.barcodes], [...scan.texts, ...t], undefined, [...scan.layouts, ...l])),
+          isEnough: (t, l) => scanComplete(mergeScan(codes, t, undefined, l)),
           onProgress: (p) => step('ocr', ocrProgress(p)),
         });
+        pageTexts.push(...texts);
+        pageLayouts.push(...layouts);
         scan.texts.push(...texts);
         scan.layouts.push(...layouts);
         scan.labels.push(...labels);
         scan.errors.push(...ocrErrors);
-        result = mergeScan([...scan.barcodes], scan.texts, undefined, scan.layouts);
         step('ocr', { state: 'done', note: reason, progress: null });
       } catch (err) {
         console.warn(err);
@@ -383,7 +413,10 @@ export async function renderBillForm(id, params) {
       step('ocr', { state: 'skip', note: '條碼的資料已經夠了' });
     }
     step('parse', { state: 'active' });
-    applyScan(result);
+    const pageAmount = pageResult().amount;
+    const amount = mode === 'same' ? await askPageAmount(pageAmount) : null;
+    if (pageAmount != null) scan.pageAmounts.push(pageAmount);
+    applyScan(mergeScan([...scan.barcodes], scan.texts, undefined, scan.layouts), { amount });
   };
   $('#live-btn').onclick = async () => {
     if (!(await startScan())) return;
@@ -393,8 +426,10 @@ export async function renderBillForm(id, params) {
     applyScan(mergeScan([...scan.barcodes], scan.texts, undefined, scan.layouts));
   };
 
-  function applyScan(r) {
+  /** opts.amount:{ value, source, pages? }(同一張帳單多頁時使用者選的金額),蓋過辨識的結果。 */
+  function applyScan(r, { amount: chosen = null } = {}) {
     guard.markDirty();
+    if (chosen) r = { ...r, amount: chosen.value, source: { ...r.source, amount: chosen.source } };
     const barcodes = [...scan.barcodes];
     const fields = []; // 帶入的欄位(畫面上的卡片)
     const notes = [];
@@ -403,6 +438,10 @@ export async function renderBillForm(id, params) {
       const box = field('notes');
       if (!box.value.includes(note)) fill('notes', box.value ? `${box.value}\n${note}` : note);
     };
+    if (chosen?.pages) {
+      addNote(`金額是 ${chosen.pages.length} 頁加總:${chosen.pages.map(money).join(' + ')} = ${money(chosen.value)}`);
+      notes.push(`💰 金額是 ${chosen.pages.length} 頁加總:${chosen.pages.map(money).join(' + ')} = <b>${money(chosen.value)}</b>(已寫進備註)。`);
+    }
     if (r.amount != null) {
       fill('amount', r.amount);
       fields.push({ label: '金額', value: money(r.amount), source: r.taxQr ? 'qr' : r.source.amount });
