@@ -1,4 +1,4 @@
-// 設定頁:通知、行事曆、文字辨識預先下載、新手引導、備份 / 匯入 / CSV。
+// 設定頁:通知、行事曆、文字辨識預先下載、新手引導、備份 / 匯入 / CSV、開發者模式。
 
 import { backupSummary, describeBackup } from '../backup.js';
 import { formatDate, todayISO } from '../dates.js';
@@ -53,9 +53,18 @@ export async function renderSettings() {
         ${persisted ? '<span class="badge ok">資料已受保護</span>' : '<button class="btn" id="persist">保護資料</button>'}
       </div>
     </section>
+    <section class="card col">
+      <h3>🛠️ 開發者模式</h3>
+      <label class="switch"><input type="checkbox" id="debug-mode" ${(await db.getMeta('debugMode')) ? 'checked' : ''}> 掃描後顯示「辨識細節」</label>
+      <p class="muted small">耗時、條碼原始內容、用了哪個辨識引擎、辨識出的全文。回報辨識問題時打開,按「複製辨識細節」貼給開發者。</p>
+    </section>
     <p class="muted small version">繳費小幫手 ${VERSION}</p>`;
 
   drawOcrBox();
+  $('#debug-mode').onchange = async (e) => {
+    await db.setMeta('debugMode', e.target.checked);
+    toast(e.target.checked ? '已開啟:掃描後會顯示辨識細節' : '已關閉辨識細節');
+  };
 
   $('#ics').onclick = async () => {
     const { templates } = await loadAll();

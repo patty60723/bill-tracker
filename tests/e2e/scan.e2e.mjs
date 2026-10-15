@@ -18,22 +18,31 @@ after(async () => {
   await server?.close();
 });
 
-async function newBillPage(opts) {
+// 掃描測試預設開啟開發者模式,才看得到「辨識細節」
+const DEBUG_META = { meta: { onboardingDismissed: true, debugMode: true } };
+async function newBillPage({ debug = true, ...opts } = {}) {
   const ctx = await openPage(browser, server.url, opts);
-  await seed(ctx.page, server.url);
+  await seed(ctx.page, server.url, debug ? DEBUG_META : undefined);
   await ctx.page.goto(`${server.url}#/bill/new`);
   await ctx.page.waitForSelector('#scan-btn');
   return ctx;
 }
 const value = (page, name) => page.inputValue(`[name=${name}]`);
+/** 結果卡片:{ 金額: '$1,234 條碼', … } */
+const cards = (page) => page.$$eval('.scan-fields .sf', (els) => Object.fromEntries(els.map((e) => [
+  e.querySelector('.sf-label').textContent, [e.querySelector('.sf-value').textContent, e.querySelector('.src')?.textContent].filter(Boolean).join(' '),
+])));
 const pick = (page, name, buffer, mimeType = 'image/jpeg') => page.setInputFiles('#pick-input', { name, mimeType, buffer });
 
 test('超商三段式條碼:截止日與金額從條碼帶入', async () => {
   const { page, context, errors } = await newBillPage();
   await pick(page, 'bill.jpg', await barcodeBill(page, ['151031K6A', '1510AB000001234']));
   const status = await waitScan(page);
-  assert.match(status, /金額 \$1,234\(條碼\)/);
-  assert.match(status, /截止日 10\/31\(條碼\)/);
+  assert.match(status, /辨識完成/); // 合成圖片解析度低,會多一個「解析度偏低」的提醒
+  assert.match(await page.textContent('.scan-warnings'), /解析度偏低/);
+  const c = await cards(page);
+  assert.equal(c['金額'], '$1,234 條碼');
+  assert.equal(c['截止日'], '10/31 條碼');
   assert.equal(await value(page, 'amount'), '1234');
   assert.equal(await value(page, 'dueDate'), '2026-10-31');
   assert.equal(await page.$$eval('#bill-files .file', (e) => e.length), 1);
@@ -55,7 +64,7 @@ test('內建條碼偵測讀錯幾碼時,以 zxing 的結果為準', async () => 
       async detect() { return [{ rawValue: '1510AB000009999', boundingBox: { x: 120, y: 400, width: 600, height: 140 } }]; }
     };
   });
-  await seed(page, server.url);
+  await seed(page, server.url, DEBUG_META);
   await page.goto(`${server.url}#/bill/new`);
   await page.waitForSelector('#scan-btn');
   await pick(page, 'bill.jpg', await barcodeBill(page, ['151031K6A', '1510AB000001234']));
@@ -103,7 +112,7 @@ test('放大條碼區有上限:條碼位置高度只有 1 px、又一直讀不�
       async detect() { return [{ rawValue: '1510AB00000123X', boundingBox: { x: 120, y: 400, width: 600, height: 1 } }]; }
     };
   });
-  await seed(page, server.url);
+  await seed(page, server.url, DEBUG_META);
   await page.goto(`${server.url}#/bill/new`);
   await page.waitForSelector('#scan-btn');
   await pick(page, 'bill.jpg', await barcodeBill(page, ['151031K6A'])); // 只有第一段,永遠讀不齊
@@ -111,6 +120,27 @@ test('放大條碼區有上限:條碼位置高度只有 1 px、又一直讀不�
   const detail = await page.textContent('.scan-detail pre');
   const runs = Number(detail.match(/zxing (\d+) 次/)[1]);
   assert.ok(runs <= 60, `zxing 跑了 ${runs} 次`);
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('結果畫面:欄位卡片標出來源;開發者模式關閉時不顯示辨識細節', async () => {
+  const { page, context, errors } = await newBillPage({ debug: false });
+  await pick(page, 'bill.jpg', await barcodeBill(page, ['151031K6A', '1510AB000001234']));
+  await waitScan(page);
+  const c = await cards(page);
+  assert.equal(c['金額'], '$1,234 條碼');
+  assert.equal(await page.$('.scan-detail'), null);
+  // 設定頁打開開發者模式後,下一次掃描就有辨識細節
+  await page.goto(`${server.url}#/settings`);
+  await modalClick(page, '離開,不儲存');
+  await page.check('#debug-mode');
+  await page.waitForFunction(() => /已開啟/.test(document.querySelector('#toast')?.textContent || ''));
+  await page.goto(`${server.url}#/bill/new`);
+  await page.waitForSelector('#scan-btn');
+  await pick(page, 'bill.jpg', await barcodeBill(page, ['151031K6A', '1510AB000001234']));
+  await waitScan(page);
+  assert.match(await page.textContent('.scan-detail pre'), /條碼解讀/);
   assert.deepEqual(errors, []);
   await context.close();
 });
@@ -132,8 +162,8 @@ test('稅單 QR:繳款類別、銷帳編號、金額;截止日往前 3 天,條�
 test('OCR:表格式帳單(PaddleOCR);辨識細節可以一鍵複製', async () => {
   const { page, context, errors } = await newBillPage({ permissions: ['clipboard-read', 'clipboard-write'] });
   await pick(page, 'table.png', fs.readFileSync(path.join(FIXTURES, 'ocr-table.png')), 'image/png');
-  const status = await waitScan(page);
-  assert.match(status, /文字辨識/);
+  await waitScan(page);
+  assert.equal((await cards(page))['金額'], '$1,286 文字');
   assert.equal(await value(page, 'amount'), '1286');
   assert.equal(await value(page, 'dueDate'), '2026-10-27');
   // 辨識細節列出每個步驟的耗時(用來量手機上的速度)
@@ -206,7 +236,7 @@ test('對準條碼掃:假相機依序拍到兩段條碼,讀齊後自動關閉並
     args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', `--use-file-for-fake-video-capture=${video}`],
   });
   const { page, errors } = await openPage(cam, server.url, { permissions: ['camera'] });
-  await seed(page, server.url);
+  await seed(page, server.url, DEBUG_META);
   await page.goto(`${server.url}#/bill/new`);
   await page.click('#live-btn');
   await page.waitForSelector('dialog.live-scan video');

@@ -173,7 +173,45 @@ h3 { margin: 0 0 4px; font-size: 1rem; }
 .form-actions { display: flex; gap: 10px; }
 
 .scan-box { display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: var(--radius); background: var(--info-bg); border: 1px solid var(--line); }
-.scan-status { font-size: .92rem; overflow-wrap: anywhere; }
+.scan-status { font-size: .92rem; overflow-wrap: anywhere; display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+
+/* 掃描步驟 */
+.scan-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; text-align: left; }
+.scan-status > p { margin: 0; }
+.scan-status { text-align: left; }
+.scan-steps .ss { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; }
+.ss-icon { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: .8rem; font-weight: 700; }
+.ss.done .ss-icon { background: var(--primary); color: var(--primary-text); }
+.ss.skip .ss-icon { background: var(--line); color: var(--muted); }
+.ss.pending .ss-icon { border: 2px solid var(--line); }
+.ss-dot { display: none; }
+.ss-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.ss-label { font-weight: 600; }
+.ss.pending .ss-label, .ss.skip .ss-label { color: var(--muted); font-weight: 500; }
+.ss-note { color: var(--muted); font-size: .84rem; }
+.ss progress { width: 100%; height: 6px; accent-color: var(--primary); }
+.spinner { width: 18px; height: 18px; border: 2.5px solid var(--line); border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+
+/* 掃描結果 */
+.scan-head { font-weight: 700; }
+.scan-head.warn { color: var(--warn); }
+.scan-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.sf { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sf-label { font-size: .76rem; color: var(--muted); }
+.sf-value { font-weight: 700; font-size: 1rem; overflow-wrap: anywhere; }
+.sf.missing { border-style: dashed; border-color: var(--warn); background: var(--warn-bg); }
+.sf.missing .sf-value { font-weight: 500; font-size: .86rem; color: var(--warn); }
+.src { align-self: flex-start; font-size: .7rem; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.src-barcode { color: var(--ok); border-color: currentColor; }
+.src-template { color: var(--primary); border-color: currentColor; }
+.src-guess { color: var(--warn); border-color: currentColor; }
+.scan-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.scan-list li { padding: 8px 10px; border-radius: 10px; line-height: 1.5; font-size: .88rem; }
+.scan-notes li { background: var(--surface); border: 1px solid var(--line); }
+.scan-warnings li { background: var(--warn-bg); border: 1px solid var(--warn); }
+.scan-tip { margin: 0; color: var(--muted); font-size: .84rem; }
 .scan-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 /* 兩種掃描方式是平行的選項:同樣外觀,不分主次 */
 .scan-tile {

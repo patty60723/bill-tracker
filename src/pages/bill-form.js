@@ -12,9 +12,11 @@ import { loadAll, runAutoPay } from '../ui/actions.js';
 import { accountFields, CATEGORIES, cycleText, dayOptions, PAY_METHODS } from '../ui/components.js';
 import { $, accountText, copyText, digits, esc, fileUrl, money, showImage, toast, view } from '../ui/dom.js';
 import { go, guardForm, navigate } from '../ui/router.js';
+import { progressHTML, resultHTML } from '../ui/scan-view.js';
 
 export async function renderBillForm(id, params) {
   const { templates, bills } = await loadAll();
+  const debug = !!(await db.getMeta('debugMode')); // 開發者模式:顯示辨識細節(設定頁)
   const isNew = id === 'new';
   let bill;
   if (isNew) {
@@ -300,22 +302,24 @@ export async function renderBillForm(id, params) {
     const r = parseConvenienceBarcodes(t);
     return !!(r.dueDate && r.amount != null);
   };
-  /** 文字辨識的進度文字。 */
+  /** 文字辨識進度 → 步驟的說明與進度條。 */
   function ocrProgress(p) {
     if (p.engine === 'paddle') {
-      return p.loading ? '載入文字辨識…(第一次需要下載約 22 MB,之後就不用)' : `文字辨識中… ${Math.round((p.progress || 0) * 100)}%`;
+      return p.loading ? { note: '載入中(第一次要下載約 22 MB,可以先到設定頁預先下載)' } : { note: '辨識帳單上的文字', progress: p.progress || 0 };
     }
-    return p.loading ? '換另一種方式辨識,載入中…(第一次需要下載約 12 MB)'
-      : `換另一種方式再讀一次…${p.pass > 1 ? `(第 ${p.pass} 次)` : ''} ${Math.round((p.progress || 0) * 100)}%`;
+    return p.loading ? { note: '換另一種方式辨識,載入中' } : { note: `換另一種方式再讀一次${p.pass > 1 ? `(第 ${p.pass} 次)` : ''}`, progress: p.progress || 0 };
   }
-  /** 說明為什麼要跑文字辨識:沒讀到條碼、條碼不完整,還是條碼齊了只是要找帳號。 */
-  function ocrReason(bc, count) {
-    if (bc.taxQr || (bc.dueDate && bc.amount != null)) return '條碼已讀到金額和截止日,再用文字辨識找繳費帳號…';
-    if (!count) return '這張照片沒讀到條碼,改用文字辨識…';
+  /** 條碼步驟的結果說明。 */
+  function barcodeNote(bc, count) {
+    if (bc.taxQr) return '讀到稅單 QR Code';
     const got = [bc.dueDate && '截止日', bc.amount != null && '金額'].filter(Boolean);
-    return got.length
-      ? `條碼只讀到${got.join('、')},用文字辨識補其他欄位…`
-      : `讀到 ${count} 個條碼,但不是超商代收條碼,改用文字辨識…`;
+    if (got.length) return `從條碼讀到${got.join('、')}`;
+    return count ? `讀到 ${count} 個條碼,但不是超商代收條碼` : '這張照片沒讀到條碼';
+  }
+  /** 為什麼要跑文字辨識:條碼不完整,還是條碼齊了只是要找帳號。 */
+  function ocrReason(bc) {
+    if (bc.taxQr || (bc.dueDate && bc.amount != null)) return '找帳單上的繳費帳號';
+    return '從帳單上的文字找金額、截止日、帳號';
   }
   /** 辨識細節裡的條碼解讀:台灣超商三段式條碼各段有沒有讀到。 */
   function barcodeSummary(bc) {
@@ -336,33 +340,49 @@ export async function renderBillForm(id, params) {
     scan.screenshot = file.type === 'image/png'; // 手機截圖是 PNG,相機拍的是 JPEG/HEIC
     scan.timings = [];
     scan.photos.push(...await addFiles('billFiles', [file]));
-    setStatus('🔍 辨識條碼中…');
+    const steps = [
+      { id: 'barcode', label: '讀條碼', state: 'active', note: '找帳單上的超商條碼、QR Code' },
+      { id: 'ocr', label: '文字辨識', state: 'pending' },
+      { id: 'parse', label: '整理結果', state: 'pending' },
+    ];
+    const step = (id, patch) => {
+      Object.assign(steps.find((x) => x.id === id), patch);
+      setStatus(progressHTML(steps));
+    };
+    setStatus(progressHTML(steps));
     const { texts: codes, errors, engines, sources } = await readBarcodes(file, { isEnough: barcodesEnough, timings: scan.timings });
     codes.forEach((c) => scan.barcodes.add(c));
     scan.engines = engines;
     Object.assign(scan.sources, sources);
     scan.errors.push(...errors);
+    const bc = parseConvenienceBarcodes([...scan.barcodes]);
+    step('barcode', { state: 'done', note: barcodeNote(bc, codes.length) });
     let result = mergeScan([...scan.barcodes], scan.texts, undefined, scan.layouts);
     // 條碼已經有金額和截止日、只缺帳號時,也跑一次文字辨識,看帳單上有沒有寫轉帳帳號
     if (!scanComplete(result) || !field('accountNo').value) {
-      const reason = ocrReason(parseConvenienceBarcodes([...scan.barcodes]), codes.length);
-      setStatus(`🔤 ${reason}`);
+      const reason = ocrReason(bc);
+      step('ocr', { state: 'active', note: reason });
       try {
         const { texts, layouts, labels, errors: ocrErrors } = await readText(file, {
           timings: scan.timings,
           isEnough: (t, l) => scanComplete(mergeScan([...scan.barcodes], [...scan.texts, ...t], undefined, [...scan.layouts, ...l])),
-          onProgress: (p) => setStatus(`🔤 ${reason}<br>${ocrProgress(p)}`),
+          onProgress: (p) => step('ocr', ocrProgress(p)),
         });
         scan.texts.push(...texts);
         scan.layouts.push(...layouts);
         scan.labels.push(...labels);
         scan.errors.push(...ocrErrors);
         result = mergeScan([...scan.barcodes], scan.texts, undefined, scan.layouts);
+        step('ocr', { state: 'done', note: reason, progress: null });
       } catch (err) {
         console.warn(err);
         scan.errors.push(`文字辨識:${err?.message || err}`);
+        step('ocr', { state: 'done', note: '文字辨識失敗,只用條碼的結果', progress: null });
       }
+    } else {
+      step('ocr', { state: 'skip', note: '條碼的資料已經夠了' });
     }
+    step('parse', { state: 'active' });
     applyScan(result);
   };
   $('#live-btn').onclick = async () => {
@@ -376,28 +396,30 @@ export async function renderBillForm(id, params) {
   function applyScan(r) {
     guard.markDirty();
     const barcodes = [...scan.barcodes];
-    const found = [];
-    const missing = [];
-    const via = (src) => ({ barcode: '條碼', printed: '條碼下方數字', ocr: '文字辨識', guess: '推測' }[src]);
+    const fields = []; // 帶入的欄位(畫面上的卡片)
+    const notes = [];
+    const warnings = [];
+    const addNote = (note) => {
+      const box = field('notes');
+      if (!box.value.includes(note)) fill('notes', box.value ? `${box.value}\n${note}` : note);
+    };
     if (r.amount != null) {
       fill('amount', r.amount);
-      found.push(`金額 ${money(r.amount)}(${via(r.source.amount)})`);
-    } else missing.push('金額');
+      fields.push({ label: '金額', value: money(r.amount), source: r.taxQr ? 'qr' : r.source.amount });
+    } else fields.push({ label: '金額', missing: true });
     if (r.dueDate) {
       fill('dueDate', r.dueDate);
-      found.push(`截止日 ${formatDate(r.dueDate)}(${r.taxCutoff ? '稅單繳納期間最後一天' : r.collectCutoff ? '帳單上的繳費期限' : via(r.source.dueDate)})`);
+      fields.push({ label: '截止日', value: formatDate(r.dueDate), source: r.taxQr ? 'qr' : r.source.dueDate });
       if (r.collectCutoff) {
-        const note = `代收截止日是 ${formatDate(r.collectCutoff)}(超商最後收單日),過了繳費期限可能會加收遲付費用`;
-        const notes = field('notes');
-        if (!notes.value.includes(note)) fill('notes', notes.value ? `${notes.value}\n${note}` : note);
+        addNote(`代收截止日是 ${formatDate(r.collectCutoff)}(超商最後收單日),過了繳費期限可能會加收遲付費用`);
+        notes.push(`📅 截止日用帳單上的繳費期限;條碼上的 ${formatDate(r.collectCutoff)} 是超商最後收單日,已寫進備註。`);
       }
       if (r.taxCutoff) {
         // 條碼上的日期是「繳納期間屆滿後 3 日」,記在備註,不當截止日
-        const note = `條碼上的繳納截止日是 ${formatDate(r.taxCutoff)}(繳納期間屆滿後 3 日)`;
-        const notes = field('notes');
-        if (!notes.value.includes(note)) fill('notes', notes.value ? `${notes.value}\n${note}` : note);
+        addNote(`條碼上的繳納截止日是 ${formatDate(r.taxCutoff)}(繳納期間屆滿後 3 日)`);
+        notes.push(`🏛️ 稅單:截止日用繳納期間最後一天;條碼上的 ${formatDate(r.taxCutoff)} 是期滿後 3 日,已寫進備註。`);
       }
-    } else missing.push('截止日');
+    } else fields.push({ label: '截止日', missing: true });
     scan.result = r;
     // 認得這張帳單(存檔時記下的帳號/代收代號/帳單種類):自動選上那個固定繳費
     let matched = null;
@@ -407,52 +429,55 @@ export async function renderBillForm(id, params) {
         fill('templateId', matched.template.id);
         $('#save-template').hidden = true;
         applyTemplate(matched.template, fill);
+        fields.unshift({ label: '固定繳費', value: matched.template.name, source: 'template' });
+        notes.unshift(`🔁 認出是固定繳費「<b>${esc(matched.template.name)}</b>」(${esc(matched.reason)}),已套用;不對的話在最上面改。`);
       }
     }
     // 從帳單上的機構名稱猜的名稱/類別:只在還沒填(類別還是「其他」)時帶入
     if (r.issuerName && !field('name').value.trim()) {
       fill('name', r.issuerName);
-      found.push(`名稱「${r.issuerName}」`);
+      fields.push({ label: '名稱', value: r.issuerName, source: 'ocr' });
     }
     if (r.category && field('category').value === 'other') fill('category', r.category);
-    if (r.period && /^\d{4}-\d{2}$/.test(r.period)) fill('period', r.period);
+    if (r.period && /^\d{4}-\d{2}$/.test(r.period)) {
+      fill('period', r.period);
+      fields.push({ label: '帳單月份', value: formatPeriod(r.period) });
+    }
     // 有固定繳費時週期以它為準(使用者自己設的)
-    if (r.cycleMonths && !field('templateId').value) fill('cycleMonths', r.cycleMonths);
-    let movedPeriod = false;
+    if (r.cycleMonths && !field('templateId').value) {
+      fill('cycleMonths', r.cycleMonths);
+      fields.push({ label: '週期', value: ({ 1: '每月', 2: '雙月', 3: '每季', 6: '半年', 12: '每年' })[r.cycleMonths] || `${r.cycleMonths} 個月` });
+    }
     // 帳單沒寫月份、截止日又離目前選的月份很遠(例如掃去年的稅單):帳單月份改成截止日那個月
     if (!r.period && r.dueDate && field('period').value) {
       const [py, pm] = field('period').value.split('-').map(Number);
       const [dy, dm] = r.dueDate.split('-').map(Number);
       if (Math.abs((dy * 12 + dm) - (py * 12 + pm)) > 1) {
         fill('period', r.dueDate.slice(0, 7));
-        movedPeriod = true;
+        fields.push({ label: '帳單月份', value: formatPeriod(field('period').value) });
+        notes.push(`📅 帳單月份改成 <b>${formatPeriod(field('period').value)}</b>(跟截止日同月),存檔後會列在那個月份底下。`);
       }
     }
     if (r.accountNo && !field('accountNo').value) {
       fill('accountNo', r.accountNo);
       if (r.bankCode) fill('bankCode', r.bankCode);
-      found.push(r.taxQr ? `繳款類別 ${r.bankCode}、銷帳編號 ${r.accountNo}` : `繳費帳號 ${accountText(r)}`);
+      fields.push(r.taxQr
+        ? { label: '銷帳編號', value: `${r.bankCode} ${r.accountNo}`, source: 'qr' }
+        : { label: '繳費帳號', value: accountText(r), source: 'ocr' });
     }
 
-    const lines = [];
-    if (found.length) lines.push(`✅ 已帶入:${found.join('、')}`);
-    if (matched) lines.push(`🔁 認出是固定繳費「<b>${esc(matched.template.name)}</b>」(${esc(matched.reason)}),已套用;不對的話在最上面改。`);
-    if (r.taxCutoff) lines.push(`🏛️ 稅單:條碼上的 ${formatDate(r.taxCutoff)} 是繳納期間屆滿後 3 日,截止日用 ${formatDate(r.dueDate)}(已寫進備註)。`);
-    if (r.collectCutoff) lines.push(`📅 截止日用帳單上的繳費期限 ${formatDate(r.dueDate)};代收截止日 ${formatDate(r.collectCutoff)}(超商最後收單日)已寫進備註。`);
-    if (movedPeriod) lines.push(`📅 帳單月份已改成 <b>${formatPeriod(field('period').value)}</b>(跟截止日同月),存檔後會列在那個月份底下;不對的話請直接改。`);
-    if (r.source.dueDate === 'guess') lines.push('⚠️ 帳單上沒找到「繳費期限」之類的字,截止日是用帳單上最晚的日期<b>推測</b>的,請一定要核對。');
-    if (missing.length) lines.push(`⚠️ 沒辨識出${missing.join('、')},請手動填寫。`);
+    if (r.source.dueDate === 'guess') warnings.push('⚠️ 帳單上沒找到「繳費期限」之類的字,截止日是用帳單上最晚的日期<b>推測</b>的,請一定要核對。');
     const LOW_RES = 2000; // 長邊少於這個,條碼和小字很容易讀不到
     if (scan.size && Math.max(scan.size.width, scan.size.height) < LOW_RES) {
-      lines.push(`⚠️ 這張照片只有 ${scan.size.width}×${scan.size.height},解析度偏低,條碼和小字容易讀不到。可以改用「🖼️ 從相簿選」:先用手機相機 App 拍,再從相簿選。`);
+      warnings.push(`⚠️ 照片只有 ${scan.size.width}×${scan.size.height},解析度偏低,條碼和小字容易讀不到。可以先用手機相機 App 拍,再「從相簿選」。`);
     }
-    if (r.source.dueDate !== 'barcode' && !barcodesEnough(barcodes) && scan.screenshot) {
-      lines.push('💡 截圖的解析度通常不夠讀條碼(條碼線太細),金額和截止日是從文字讀的,請核對。');
-    } else if (r.source.dueDate !== 'barcode' && !barcodesEnough(barcodes)) {
-      lines.push('💡 截止日、金額最準的來源是帳單下方的超商條碼。條碼沒讀到的話,按「▦ 對準條碼掃」把鏡頭靠近條碼試試。');
+    let tip = '';
+    if (r.source.dueDate !== 'barcode' && !barcodesEnough(barcodes)) {
+      tip = scan.screenshot
+        ? '💡 截圖的解析度通常不夠讀條碼,金額和截止日是從文字讀的。'
+        : '💡 最準的是帳單下方的超商條碼。條碼沒讀到的話,可以按「對準條碼掃」把鏡頭靠近條碼。';
     }
-    lines.push('<span class="muted small">照片已存下。辨識偶爾會看錯,存檔前請核對。</span>');
-    const detail = [
+    const detail = debug ? [
       ...(scan.timings?.length ? [`耗時:${scan.timings.map((x) => `${x.label} ${(x.ms / 1000).toFixed(1)}s`).join(' · ')}`
         + `(共 ${(scan.timings.reduce((a, x) => a + x.ms, 0) / 1000).toFixed(1)}s)`] : []),
       ...(scan.size ? [`照片解析度:${scan.size.width}×${scan.size.height}(約 ${Math.round(scan.size.width * scan.size.height / 1e4)} 萬畫素)`] : []),
@@ -462,11 +487,9 @@ export async function renderBillForm(id, params) {
       `帳單種類:${r.profileLabel || '沒認出(用通用規則)'}`,
       ...scan.texts.map((t, i) => `文字辨識 #${i + 1}${scan.labels[i] ? `(${scan.labels[i]})` : ''}:\n${t.trim() || '(空白)'}`),
       ...(scan.errors.length ? [`錯誤:\n${[...new Set(scan.errors)].join('\n')}`] : []),
-    ].join('\n\n');
-    setStatus(`${lines.join('<br>')}<details class="scan-detail"><summary>辨識細節</summary>`
-      + '<button type="button" class="btn small" data-copy-detail>📋 複製辨識細節</button>'
-      + `<pre>${esc(detail)}</pre></details>`);
-    status.querySelector('[data-copy-detail]').onclick = () => copyText(detail, '辨識細節', { preview: false });
+    ].join('\n\n') : null;
+    setStatus(resultHTML({ fields, notes, warnings, tip, detail }));
+    status.querySelector('[data-copy-detail]')?.addEventListener('click', () => copyText(detail, '辨識細節', { preview: false }));
   }
   if (params.get('scan') && isNew) $('#scan-input').click();
 
