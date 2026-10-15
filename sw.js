@@ -48,7 +48,7 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
   if (url.pathname.includes('/vendor/')) {
-    e.respondWith(vendorFile(e.request));
+    e.respondWith(vendorFile(e));
     return;
   }
   e.respondWith((async () => {
@@ -59,7 +59,7 @@ self.addEventListener('fetch', (e) => {
       const res = e.request.mode === 'navigate'
         ? await fetch(e.request.url, { cache: 'no-cache', credentials: 'same-origin' })
         : await fetch(e.request, { cache: 'no-cache' });
-      if (res.ok) cache.put(e.request, res.clone());
+      if (res.ok) e.waitUntil(cache.put(e.request, res.clone()));
       return withIsolation(res);
     } catch (err) {
       const cached = await cache.match(e.request, { ignoreSearch: true });
@@ -69,12 +69,15 @@ self.addEventListener('fetch', (e) => {
   })());
 });
 
-/** vendor/ 的檔案不會變:先用快取(任何一個,app shell 預先快取的 zxing 也算),沒有才下載並存進 VENDOR_CACHE。 */
-async function vendorFile(request) {
-  const cached = await caches.match(request, { ignoreSearch: true });
+/**
+ * vendor/ 的檔案不會變:先用快取(任何一個,app shell 預先快取的 zxing 也算),沒有才下載並存進 VENDOR_CACHE。
+ * 寫快取用 waitUntil:不然瀏覽器可能在 22 MB 的模型寫完前就把 service worker 停掉,下次又要重新下載。
+ */
+async function vendorFile(e) {
+  const cached = await caches.match(e.request, { ignoreSearch: true });
   if (cached) return withIsolation(cached);
-  const res = await fetch(request);
-  if (res.ok) (await caches.open(VENDOR_CACHE)).put(request, res.clone());
+  const res = await fetch(e.request);
+  if (res.ok) e.waitUntil(caches.open(VENDOR_CACHE).then((c) => c.put(e.request, res.clone())));
   return withIsolation(res);
 }
 
