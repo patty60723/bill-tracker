@@ -1,4 +1,4 @@
-// 設定頁:通知、行事曆、文字辨識預先下載、新手引導、備份 / 匯入 / CSV、開發者模式。
+// 設定頁:通知、行事曆、文字辨識預先下載、PDF 密碼、新手引導、備份 / 匯入 / CSV、開發者模式。
 
 import { backupSummary, describeBackup } from '../backup.js';
 import { formatDate, todayISO } from '../dates.js';
@@ -19,6 +19,7 @@ export async function renderSettings() {
   const all = await loadAll();
   const backup = await getBackupStatus(all.templates, all.bills);
   const backupAt = await db.getMeta('lastBackupAt');
+  const pdfPasswords = (await db.getMeta('pdfPasswords')) || [];
   view.innerHTML = `
     <header class="page-head"><h1>設定</h1></header>
     <section class="card col">
@@ -35,6 +36,12 @@ export async function renderSettings() {
       <p class="small" id="ocr-status">檢查中…</p>
       <progress id="ocr-progress" max="1" value="0" hidden></progress>
       <div class="btn-row" id="ocr-actions"></div>
+    </section>
+    <section class="card col" id="pw-box">
+      <h3>🔐 PDF 帳單密碼</h3>
+      <p class="small" id="pw-status">${(pdfPasswords.length ? `已記住 ${pdfPasswords.length} 組密碼。` : '還沒有記住任何密碼。')}</p>
+      <p class="muted small">打開有密碼的 PDF 電子帳單時,在密碼框勾「記住這個密碼」,之後會自動先試。密碼只存在這支手機的瀏覽器裡,不會進備份檔。</p>
+      ${pdfPasswords.length ? '<div class="btn-row"><button class="btn" id="pw-clear">清除記住的密碼</button></div>' : ''}
     </section>
     <section class="card col">
       <h3>👋 新手引導</h3>
@@ -61,6 +68,12 @@ export async function renderSettings() {
     <p class="muted small version">繳費小幫手 ${VERSION}</p>`;
 
   drawOcrBox();
+  $('#pw-clear')?.addEventListener('click', async () => {
+    if (!(await confirmDialog({ title: '清除記住的 PDF 密碼?', message: '之後打開有密碼的 PDF 會再問一次。', ok: '清除', danger: true }))) return;
+    await db.setMeta('pdfPasswords', []);
+    toast('已清除');
+    render();
+  });
   $('#debug-mode').onchange = async (e) => {
     await db.setMeta('debugMode', e.target.checked);
     toast(e.target.checked ? '已開啟:掃描後會顯示辨識細節' : '已關閉辨識細節');

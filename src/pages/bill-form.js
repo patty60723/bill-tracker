@@ -14,6 +14,7 @@ import { accountFields, CATEGORIES, cycleText, dayOptions, PAY_METHODS } from '.
 import { $, accountText, copyText, digits, esc, fileUrl, money, showImage, toast, view } from '../ui/dom.js';
 import { go, guardForm, navigate } from '../ui/router.js';
 import { progressHTML, resultHTML } from '../ui/scan-view.js';
+import { takeSharedFiles } from '../ui/share.js';
 
 export async function renderBillForm(id, params) {
   const { templates, bills } = await loadAll();
@@ -365,10 +366,13 @@ export async function renderBillForm(id, params) {
   }
   $('#scan-btn').onclick = () => $('#scan-input').click();
   $('#pick-input').onchange = (e) => $('#scan-input').onchange(e);
-  $('#scan-input').onchange = async (e) => {
+  $('#scan-input').onchange = (e) => {
     const file = e.target.files[0];
     e.target.value = '';
-    if (!file) return;
+    if (file) scanFile(file);
+  };
+  /** 辨識一個檔案(拍照、相簿選的照片或 PDF、從別的 app 分享過來的)。 */
+  async function scanFile(file) {
     const mode = await startScan();
     if (!mode) return;
     scan.timings = [];
@@ -391,12 +395,28 @@ export async function renderBillForm(id, params) {
     if (pdf) {
       const t0 = performance.now();
       try {
+        // 先試記住的密碼(設定頁可以清除),都不對才問
+        const saved = [...((await db.getMeta('pdfPasswords')) || [])];
+        const triedSaved = saved.length;
+        let prompted = 0;
+        let toRemember = null;
         const doc = await readPdf(file, {
-          askPassword: (wrong) => passwordDialog({
-            title: wrong ? '密碼不對,再試一次' : '這個 PDF 有密碼',
-            message: '電子帳單的密碼通常是身分證字號(英文字母大寫)、生日或手機號碼,寄帳單的通知信裡會寫。',
-          }),
+          askPassword: async (wrong) => {
+            if (saved.length) return saved.shift();
+            const r = await passwordDialog({
+              title: wrong && prompted ? '密碼不對,再試一次' : '這個 PDF 有密碼',
+              message: (triedSaved && !prompted ? `記住的 ${triedSaved} 組密碼都打不開。` : '')
+                + '電子帳單的密碼通常是身分證字號(英文字母大寫)、生日或手機號碼,寄帳單的通知信裡會寫。',
+            });
+            prompted++;
+            toRemember = r?.remember ? r.password : null;
+            return r ? r.password : null;
+          },
         });
+        if (doc && toRemember) {
+          const list = (await db.getMeta('pdfPasswords')) || [];
+          if (!list.includes(toRemember)) await db.setMeta('pdfPasswords', [...list, toRemember]);
+        }
         if (!doc) {
           status.hidden = true;
           return toast('沒有輸入密碼,已取消');
@@ -475,7 +495,7 @@ export async function renderBillForm(id, params) {
     const amount = mode === 'same' ? await askPageAmount(pageAmount) : null;
     if (pageAmount != null) scan.pageAmounts.push(pageAmount);
     applyScan(mergeScan([...scan.barcodes], scan.texts, undefined, scan.layouts), { amount });
-  };
+  }
   $('#live-btn').onclick = async () => {
     if (!(await startScan())) return;
     const codes = await liveScan({ describe: describeBarcodes, isEnough: barcodesEnough });
@@ -603,6 +623,14 @@ export async function renderBillForm(id, params) {
     status.querySelector('[data-copy-detail]')?.addEventListener('click', () => copyText(detail, '辨識細節', { preview: false }));
   }
   if (params.get('scan') && isNew) $('#scan-input').click();
+  // 從 Gmail 等 app 分享過來的帳單:直接辨識(拿了就從暫存刪掉,網址也拿掉 shared,重新整理不會再跑一次)
+  if (params.get('shared') && isNew) {
+    history.replaceState(null, '', '#/bill/new');
+    const files = await takeSharedFiles();
+    if (files.length > 1) toast(`收到 ${files.length} 個檔案,先辨識第一個;其他的可以再用「從相簿選」加進來`);
+    if (files.length) scanFile(files[0]);
+    else toast('沒有收到檔案');
+  }
 
   // --- 儲存/取消/刪除 ---
   form.onsubmit = async (e) => {

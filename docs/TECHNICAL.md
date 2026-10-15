@@ -325,6 +325,22 @@ canvas 呼叫 `detectCanvas()`;讀到新條碼就震動、更新清單(✅ 截�
 - 測試用 PDF(`tests/fixtures/pdf/`,假資料):Chromium `page.pdf()` 產生一般版與掃描檔(只有圖片),
   pikepdf 加密成有密碼的版本(密碼 `A123456789`)。
 
+#### 從別的 app 分享過來(Web Share Target)
+
+`manifest.webmanifest` 的 `share_target`:POST multipart 到 `./share-target`,檔案欄位 `file`(PDF、圖片)。
+Android Chrome 把 app 加到主畫面後,分享選單才會出現。`sw.js` 的 `receiveShare` 讀 `formData()`,
+把檔案放進 `SHARE_CACHE`(`bill-tracker-share`,activate 不刪;檔名放 `X-File-Name` header,`encodeURIComponent`),
+再 303 轉到 `#/bill/new?shared=N`。帳單表單看到 `shared` 時 `takeSharedFiles()` 拿走並刪掉、
+`replaceState` 拿掉網址的 `shared`(重新整理不會再辨識一次),把第一個檔案交給 `scanFile`。
+> 測試:`fetch('share-target', { method: 'POST', body: form, redirect: 'manual' })` 得到 `opaqueredirect`;
+> 跟著轉址的 `res.url` 不含 `#` 後面,不能拿來驗證。
+
+#### PDF 密碼
+
+`passwordDialog` 回傳 `{ password, remember }`,「記住這個密碼」**預設不勾**。勾了的話打開成功後存進
+meta `pdfPasswords`(陣列;meta 不在 `exportAll` 裡,所以不會進備份檔)。之後 `onPassword` 先依序回傳記住的密碼,
+都錯才跳對話框(訊息寫「記住的 N 組密碼都打不開」)。設定頁可以清除。
+
 #### Tesseract(備援)
 
 - Tesseract.js 5.1.1,語言 `chi_tra+eng`,OEM 1(LSTM only)。`workerPath`、`corePath`、`langPath`

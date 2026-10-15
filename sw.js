@@ -5,7 +5,7 @@
 // 2. 背景提醒:Android Chrome 把 app 加到主畫面後,瀏覽器會定期(大約一天一次以上,時間由瀏覽器決定)
 //    用 periodicsync 叫醒這裡,有快截止、逾期、該拿繳費單的帳單就跳通知。
 import { notifyReminders, SYNC_TAG } from './src/notify.js';
-import { VENDOR_CACHE, VERSION } from './src/version.js';
+import { SHARE_CACHE, VENDOR_CACHE, VERSION } from './src/version.js';
 
 const CACHE = `bill-tracker-${VERSION}`;
 // vendor/(OCR 模型、引擎)放在另一個快取 VENDOR_CACHE(src/version.js),不跟著 app 版本清掉。
@@ -17,7 +17,7 @@ const ASSETS = [
   'src/livescan.js', 'src/modal.js', 'src/notify.js', 'src/pages/bill-form.js', 'src/pages/bills.js',
   'src/pages/home.js', 'src/pages/settings.js', 'src/pages/templates.js', 'src/paddle.js', 'src/parse.js', 'src/pdf.js', 'src/profiles.js', 'src/scan.js',
   'src/schedule.js', 'src/stats.js', 'src/ui/actions.js', 'src/ui/components.js', 'src/ui/dom.js',
-  'src/ui/notifications.js', 'src/ui/router.js', 'src/ui/scan-view.js', 'src/version.js',
+  'src/ui/notifications.js', 'src/ui/router.js', 'src/ui/scan-view.js', 'src/ui/share.js', 'src/version.js',
   'vendor/zxing-reader.js', 'vendor/zxing_reader.wasm',
 ];
 
@@ -29,7 +29,7 @@ self.addEventListener('install', (e) => {
 
 self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys()
-    .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== VENDOR_CACHE).map((k) => caches.delete(k))))
+    .then((keys) => Promise.all(keys.filter((k) => ![CACHE, VENDOR_CACHE, SHARE_CACHE].includes(k)).map((k) => caches.delete(k))))
     .then(() => self.clients.claim()));
 });
 
@@ -46,6 +46,11 @@ function withIsolation(res) {
 
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
+  // 從 Gmail 等 app「分享」過來的檔案(manifest 的 share_target)
+  if (e.request.method === 'POST' && url.origin === location.origin && url.pathname.endsWith('/share-target')) {
+    e.respondWith(receiveShare(e.request));
+    return;
+  }
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
   if (url.pathname.includes('/vendor/')) {
     e.respondWith(vendorFile(e));
@@ -68,6 +73,21 @@ self.addEventListener('fetch', (e) => {
     }
   })());
 });
+
+/**
+ * 收下分享過來的檔案:放進 SHARE_CACHE(取代上一次沒拿走的),再導到新增帳單,表單會自動辨識。
+ * 檔名放在 header 裡(中文要 encode)。
+ */
+async function receiveShare(request) {
+  const form = await request.formData();
+  const files = form.getAll('file').filter((f) => f && typeof f === 'object' && f.size);
+  const cache = await caches.open(SHARE_CACHE);
+  for (const key of await cache.keys()) await cache.delete(key);
+  await Promise.all(files.map((f, i) => cache.put(new URL(`shared/${i}`, self.registration.scope).href, new Response(f, {
+    headers: { 'Content-Type': f.type || 'application/octet-stream', 'X-File-Name': encodeURIComponent(f.name || `shared-${i}`) },
+  }))));
+  return Response.redirect(new URL(`./#/bill/new?shared=${files.length}`, self.registration.scope).href, 303);
+}
 
 /**
  * vendor/ 的檔案不會變:先用快取(任何一個,app shell 預先快取的 zxing 也算),沒有才下載並存進 VENDOR_CACHE。

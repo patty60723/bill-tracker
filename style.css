@@ -364,3 +364,5 @@ dialog.modal[open] { animation: modal-in .16s ease-out; }
 .version { text-align: center; margin: 4px 0 12px; }
 #ocr-progress { width: 100%; height: 10px; accent-color: var(--primary); }
 .modal-input { width: 100%; font-size: 1.05rem; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--text); margin-top: 4px; }
+.modal-remember { display: flex; align-items: center; gap: 8px; font-size: .88rem; color: var(--muted); margin-top: 8px; }
+.modal-remember input { width: 18px; height: 18px; accent-color: var(--primary); }

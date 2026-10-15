@@ -54,7 +54,7 @@ export function ask({ title, message = '', actions, cancelValue = null, stacked 
     document.body.append(dlg);
     dlg.showModal();
     // 有輸入框就先聚焦輸入框;危險動作時,預設焦點放在「取消」那一顆,避免誤按 Enter
-    const input = dlg.querySelector('input');
+    const input = dlg.querySelector('input:not([type=checkbox])');
     const safe = actions.findIndex((a) => a.value === cancelValue);
     (input || dlg.querySelector(`[data-i="${safe >= 0 ? safe : 0}"]`))?.focus();
   });
@@ -91,15 +91,23 @@ export function copyDialog({ title, text }) {
   return p;
 }
 
-/** 輸入密碼(PDF 電子帳單):回傳輸入的字串,取消回傳 null。 */
+/**
+ * 輸入密碼(PDF 電子帳單)。回傳 { password, remember },取消回傳 null。
+ * 「記住這個密碼」預設不勾:要不要把密碼存在手機上由使用者決定。
+ */
 export function passwordDialog({ title, message, ok = '開啟' }) {
   return ask({
     title,
     message,
-    extra: '<input type="password" class="modal-input" autocomplete="off" autocapitalize="characters" aria-label="密碼">',
+    extra: `<input type="password" class="modal-input" autocomplete="off" autocapitalize="characters" aria-label="密碼">
+      <label class="switch modal-remember"><input type="checkbox"> 記住這個密碼(只存在這支手機,不會進備份)</label>`,
     actions: [
       { label: '取消', value: null },
-      { label: ok, value: (dlg) => dlg.querySelector('input').value, kind: 'primary' },
+      {
+        label: ok,
+        kind: 'primary',
+        value: (dlg) => ({ password: dlg.querySelector('.modal-input').value, remember: dlg.querySelector('.modal-remember input').checked }),
+      },
     ],
   });
 }

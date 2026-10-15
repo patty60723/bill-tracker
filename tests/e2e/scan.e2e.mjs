@@ -230,6 +230,63 @@ test('壞掉的 PDF:說明讀不出來,不加照片', async () => {
   await context.close();
 });
 
+test('PDF 密碼:勾「記住」之後下次自動試,不再問;設定頁可以清除', async () => {
+  const { page, context, errors } = await newBillPage();
+  await page.setInputFiles('#pick-input', pdfFile('ebill-locked.pdf'));
+  await page.waitForSelector('dialog.modal[open] >> text=這個 PDF 有密碼');
+  await page.fill('dialog.modal[open] .modal-input', 'A123456789');
+  await page.check('dialog.modal[open] .modal-remember input');
+  await modalClick(page, '開啟');
+  await waitScan(page);
+  assert.deepEqual(await page.evaluate(async () => (await import('./src/db.js')).getMeta('pdfPasswords')), ['A123456789']);
+
+  await page.goto(`${server.url}#/`);
+  await modalClick(page, '離開,不儲存');
+  await page.goto(`${server.url}#/bill/new`);
+  await page.waitForSelector('#scan-btn');
+  await page.setInputFiles('#pick-input', pdfFile('ebill-locked.pdf'));
+  await waitScan(page); // 沒有跳密碼框
+  assert.equal(await value(page, 'amount'), '1286');
+
+  await page.goto(`${server.url}#/settings`);
+  await modalClick(page, '離開,不儲存');
+  assert.match(await page.textContent('#pw-status'), /已記住 1 組密碼/);
+  await page.click('#pw-clear');
+  await modalClick(page, '清除');
+  await page.waitForFunction(() => /還沒有記住/.test(document.querySelector('#pw-status')?.textContent || ''));
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('從別的 app 分享 PDF 過來(share target):自動開新增帳單並辨識', async () => {
+  const { page, context, errors } = await openPage(browser, server.url);
+  await seed(page, server.url, DEBUG_META);
+  await page.goto(`${server.url}#/`);
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  await page.reload(); // 讓 service worker 接手
+  await page.waitForSelector('.quick');
+  const pdf = fs.readFileSync(path.join(FIXTURES, '../pdf/ebill.pdf')).toString('base64');
+  // 模擬 Android 分享:POST multipart 到 share-target,service worker 收下後導到新增帳單
+  const landed = await page.evaluate(async (b64) => {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const form = new FormData();
+    form.append('file', new File([bytes], '電費帳單.pdf', { type: 'application/pdf' }));
+    // redirect: 'manual' 才看得出 service worker 回了轉址(fetch 跟著轉址後的網址不含 # 後面)
+    const res = await fetch('share-target', { method: 'POST', body: form, redirect: 'manual' });
+    const waiting = (await (await caches.open('bill-tracker-share')).keys()).length;
+    return { type: res.type, waiting };
+  }, pdf);
+  assert.deepEqual(landed, { type: 'opaqueredirect', waiting: 1 });
+  await page.goto(`${server.url}#/bill/new?shared=1`);
+  await waitScan(page);
+  assert.equal(await value(page, 'amount'), '1286');
+  assert.equal(await page.$$eval('#bill-files .file', (e) => e.length), 1);
+  assert.equal(new URL(page.url()).hash, '#/bill/new'); // 拿掉 shared,重新整理不會再辨識一次
+  assert.equal(await page.evaluate(async () => (await (await caches.open('bill-tracker-share')).keys()).length), 0);
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
 test('掃描成 PDF(只有圖片):改用文字辨識', async () => {
   const { page, context, errors } = await newBillPage();
   await page.setInputFiles('#pick-input', pdfFile('scanned.pdf'));
