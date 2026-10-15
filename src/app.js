@@ -4,6 +4,8 @@ import * as db from './db.js';
 import { renderBillForm } from './pages/bill-form.js';
 import { renderBills } from './pages/bills.js';
 import { promptInstall, renderHome } from './pages/home.js';
+import { renderInbox } from './pages/inbox.js';
+import { listInbox } from './inbox.js';
 import { renderSettings } from './pages/settings.js';
 import { renderTemplateForm, renderTemplates } from './pages/templates.js';
 import { backupNow, collectGarbage, markPaid, runAutoPay, snoozeBackup } from './ui/actions.js';
@@ -48,6 +50,7 @@ registerRoutes({
   templates: () => renderTemplates(),
   template: ({ id }) => renderTemplateForm(id),
   settings: () => renderSettings(),
+  inbox: () => renderInbox(),
 });
 
 startRouter();
@@ -59,5 +62,10 @@ startRouter();
 })();
 
 collectGarbage();
+
+// Gmail 收件匣:打開 app 時取一次清單(沒設定就不做),首頁有新的就顯示卡片
+listInbox().then((items) => {
+  if (items?.length && (location.hash === '' || location.hash === '#/')) render();
+}).catch((e) => console.warn('收件匣', e));
 
 setupServiceWorker();

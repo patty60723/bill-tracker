@@ -341,6 +341,25 @@ Android Chrome 把 app 加到主畫面後,分享選單才會出現。`sw.js` 的
 meta `pdfPasswords`(陣列;meta 不在 `exportAll` 裡,所以不會進備份檔)。之後 `onPassword` 先依序回傳記住的密碼,
 都錯才跳對話框(訊息寫「記住的 N 組密碼都打不開」)。設定頁可以清除。
 
+#### Gmail 收件匣(`src/inbox.js`、`src/pages/inbox.js`、`tools/gmail-inbox/`)
+
+- **Apps Script**(`Code.gs`,使用者自己的帳號,`appsscript.json` 只要 `gmail.readonly`)部署成網頁應用程式,
+  `doGet` 依 `?key=`(Script Properties 的 `KEY`,`setup()` 產生)驗證:`list` 搜尋 `label:帳單 has:attachment newer_than:60d`,
+  回傳 PDF 與 ≥ 30 KB 的圖片附件(id = `訊息 id:附件序號`,依日期舊到新);`get` 回 base64;`ack` 把 id 記進
+  Script Properties `ACKED`(最近 500 筆)。不打 Gmail 標籤,不需要寫入權限。用 node `vm` 加假的 GmailApp 做單元測試。
+- **CORS**:Apps Script 的 `ContentService` 回應帶 `Access-Control-Allow-Origin: *`,但只接受簡單請求,
+  所以只用 GET、金鑰放 query、不加任何 header。頁面是 COEP require-corp,CORS 模式的 fetch 不受影響。
+- **app**:meta `inboxUrl`、`inboxItems`(上次清單,首頁卡片 / 離線用)、`inboxSeen`(已通知過的 id)。
+  附件下載後放 `INBOX_CACHE`(`bill-tracker-inbox`,activate 不刪),ack 時刪。
+- **背景**:`periodicsync` 時 `syncInboxInBackground()` 列出、先下載、只對沒通知過的跳通知(`data.url = './#/inbox'`)。
+  `notificationclick` 只有 url 含 `#` 時才 `client.navigate`(一般提醒不換頁,免得填到一半的表單被換掉)。
+  辨識不在背景做:module service worker 不能 `import()`,把 pdf.js 靜態 import 進 sw.js 又會讓每次啟動都載 2 MB。
+- **記錄**:收件匣頁「記錄」/「全部記錄」→ `#/bill/new?inbox=<id>[&chain=1]`。帳單表單**在 `onsubmit` 設好之後**才開始
+  (`startInbox`),跑一般的 `scanFile`;`applyScan` 回傳 `confident`(有金額、截止日不是推測、有固定繳費、沒有警告)。
+  有把握且 meta `inboxAutoSave !== false` 時 `form.requestSubmit()` 自動存。存完 `ackInbox`,`chain` 時接著下一張。
+  同一個固定繳費同一個月已經有了:自動時直接略過並 ack,手動時多一個「略過這張」選項。
+- e2e 用 `startInboxMock`(同樣 API 與 CORS 的本機假伺服器)。
+
 #### Tesseract(備援)
 
 - Tesseract.js 5.1.1,語言 `chi_tra+eng`,OEM 1(LSTM only)。`workerPath`、`corePath`、`langPath`

@@ -1,6 +1,8 @@
 // 首頁:待辦提醒、本月統計、新手引導、備份提醒。
 
 import { backupSummary, SNOOZE_DAYS } from '../backup.js';
+import { cachedInboxItems } from '../inbox.js';
+import { inboxCard } from './inbox.js';
 import { periodKey, todayISO } from '../dates.js';
 import * as db from '../db.js';
 import { buildReminders, monthSummary } from '../schedule.js';
@@ -93,6 +95,7 @@ export async function renderHome() {
       <a class="btn big" href="#/bill/new">＋ 手動新增</a>
     </div>
     ${showOnboarding ? onboardingCard({ hasData: templates.length + bills.length > 0 }) : notifyBanner(templates.length + bills.length)}
+    ${inboxCard(await cachedInboxItems())}
     ${backup.due ? backupCard(backup) : ''}
     <section id="reminders">
       <h2>待辦提醒</h2>

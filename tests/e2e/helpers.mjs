@@ -222,3 +222,29 @@ export async function fakeCameraVideo(page, codes, { frames = 15, w = 1280, h = 
   fs.writeFileSync(file, Buffer.concat(parts));
   return file;
 }
+
+/**
+ * 假的 Gmail 收件匣(跟 tools/gmail-inbox/Code.gs 一樣的 API,CORS 也一樣只有 Access-Control-Allow-Origin: *)。
+ * files:[{ id, subject, name, type, path }]。回傳 { url(含 ?key=k), acked, close }。
+ */
+export function startInboxMock(files) {
+  const acked = [];
+  const json = (res, obj) => { res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }); res.end(JSON.stringify(obj)); };
+  const server = http.createServer((req, res) => {
+    const q = new URL(req.url, 'http://x').searchParams;
+    if (q.get('key') !== 'k') return json(res, { error: 'unauthorized' });
+    const left = files.filter((f) => !acked.includes(f.id));
+    switch (q.get('action')) {
+      case 'list': return json(res, { items: left.map(({ id, subject, name, type }) => ({ id, subject, name, type, from: '帳單 <bill@example.com>', date: '2026-10-05T01:00:00.000Z', size: 1 })) });
+      case 'get': {
+        const f = files.find((x) => x.id === q.get('id'));
+        return json(res, f ? { id: f.id, name: f.name, type: f.type, data: fs.readFileSync(f.path).toString('base64') } : { error: '找不到附件' });
+      }
+      case 'ack': acked.push(q.get('id')); return json(res, { ok: true });
+      default: return json(res, { ok: true, app: 'bill-tracker-inbox', version: 1, label: '帳單' });
+    }
+  });
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({
+    url: `http://127.0.0.1:${server.address().port}/exec?key=k`, acked, close: () => new Promise((r) => server.close(r)),
+  })));
+}

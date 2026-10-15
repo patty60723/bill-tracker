@@ -29,6 +29,7 @@
 - 條碼讀到一段、另外幾段沒讀到時,會把那一欄放大重掃;條碼都沒讀到,也會用文字辨識讀到的「條碼下方數字」補截止日。
 - 台電等帳單:條碼日期是「代收截止日」時,截止日改用帳單上的「繳費期限」,代收截止日寫進備註。
 - 帳單上寫「轉帳代繳 / 自動扣繳」:勾「同時存成固定繳費」時預設「自動扣款」(到截止日自動記成已繳,不提醒去繳)。
+- **Gmail 帳單收件匣**:用 Gmail 篩選器把電子帳單標上「帳單」,加上一支在你自己 Google 帳號裡執行的 Apps Script(`tools/gmail-inbox/`,唯讀),app 會在背景同步和打開時取件、跳通知;「全部記錄」時有把握的自動存,其他的停下來確認。設定步驟見 [tools/gmail-inbox/README.md](tools/gmail-inbox/README.md)。
 - **從 Gmail 一鍵分享**:Android 上把 app 加到主畫面後,在 Gmail(或 LINE、檔案管理)打開帳單 PDF / 圖片 → 分享 → 「繳費小幫手」,會直接開新增帳單並辨識。
 - **記住 PDF 密碼**:密碼框勾「記住這個密碼」,之後打開有密碼的 PDF 會先自動試;只存在這支手機、不進備份,設定頁可以清除。
 - **PDF 電子帳單**:「從相簿選」可以選 PDF。有文字的 PDF 直接讀文字(不用辨識,又快又準),條碼從畫成大圖的頁面讀;有密碼的會問密碼(通常是身分證字號);掃描成 PDF 的(只有圖片)改用文字辨識。原本的 PDF 會存在帳單裡。
@@ -136,6 +137,8 @@ GitHub Actions(`.github/workflows/test.yml`)在每次 push / PR 自動跑 lint�
 | `src/schedule.js` | 固定繳費週期、提醒清單、自動扣款、月統計 |
 | `src/parse.js` | 條碼 / 稅單 QR / OCR 文字 → 金額、截止日、帳號、帳單月份 |
 | `src/scan.js` | 讀條碼(BarcodeDetector + zxing-wasm)、OCR(先 PaddleOCR,備援 Tesseract.js) |
+| `src/inbox.js`、`src/pages/inbox.js` | Gmail 收件匣:取件、背景同步、收件匣頁 |
+| `tools/gmail-inbox/` | Gmail 收件匣的 Apps Script 與設定說明 |
 | `src/ui/share.js` | 拿走從別的 app 分享過來的檔案(Web Share Target) |
 | `src/pdf.js` | PDF 電子帳單:pdf.js 讀文字(含位置)、頁面畫成圖片、密碼 |
 | `src/paddle.js` | PaddleOCR(PP-OCRv5)在瀏覽器跑:文字偵測、逐框辨識、排成行 |
@@ -200,10 +203,11 @@ GitHub Actions(`.github/workflows/test.yml`)在每次 push / PR 自動跑 lint�
 ### 電子帳單自動化
 
 - [x] 第一階段:Android 分享選單(Web Share Target)、記住 PDF 密碼
-- [ ] 第一階段之二:辨識有把握時(條碼 / PDF 文字、認出固定繳費、截止日不是推測)一鍵或自動存檔
-- [ ] 第二階段:Gmail 篩選器 + Google Apps Script 把帳單 PDF 存到雲端硬碟「帳單收件匣」,
-  app 打開時從收件匣匯入(需要使用者建 Google Cloud OAuth 用戶端 ID)
-- [ ] 第三階段:完全背景處理與推播(需要伺服器,同 P2 雲端同步)
+- [x] 有把握時自動記錄(認出固定繳費、條碼 / PDF 文字有金額與截止日、沒有警告)
+- [x] 第二階段:Gmail 篩選器 + Apps Script(唯讀、在使用者自己的帳號)→ app 背景同步下載並通知、收件匣頁「全部記錄」
+  (改用 Apps Script 網頁應用程式 + 金鑰,不需要 Google Cloud OAuth)
+- [ ] 背景同步時直接辨識並記錄(現在背景只下載與通知,辨識在打開 app 時做:service worker 不能動態載入 pdf.js)
+- [ ] 第三階段:收信後幾分鐘內就記錄(需要原生 app 或伺服器)
 
 ### P2:之後再說
 

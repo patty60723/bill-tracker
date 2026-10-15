@@ -4,6 +4,7 @@ import { backupSummary, describeBackup } from '../backup.js';
 import { formatDate, todayISO } from '../dates.js';
 import * as db from '../db.js';
 import { buildICS } from '../ics.js';
+import { getInboxUrl, testInbox } from '../inbox.js';
 import { downloadPaddle, PADDLE_TOTAL_BYTES, paddleDownloaded, removePaddle } from '../paddle.js';
 import { alertDialog, confirmDialog } from '../modal.js';
 import { billsToCSV } from '../stats.js';
@@ -20,6 +21,8 @@ export async function renderSettings() {
   const backup = await getBackupStatus(all.templates, all.bills);
   const backupAt = await db.getMeta('lastBackupAt');
   const pdfPasswords = (await db.getMeta('pdfPasswords')) || [];
+  const inboxUrl = await getInboxUrl();
+  const inboxAuto = (await db.getMeta('inboxAutoSave')) !== false;
   view.innerHTML = `
     <header class="page-head"><h1>設定</h1></header>
     <section class="card col">
@@ -36,6 +39,21 @@ export async function renderSettings() {
       <p class="small" id="ocr-status">檢查中…</p>
       <progress id="ocr-progress" max="1" value="0" hidden></progress>
       <div class="btn-row" id="ocr-actions"></div>
+    </section>
+    <section class="card col" id="inbox-box">
+      <h3>📬 Gmail 帳單收件匣</h3>
+      <p class="muted small">Gmail 標了「帳單」的電子帳單會自動進到 app:背景同步(Android 加到主畫面後)和打開 app 時會去取件。
+        要先在你自己的 Google 帳號設定一個 Apps Script,步驟見 <a href="https://github.com/patty60723/bill-tracker/blob/main/tools/gmail-inbox/README.md" target="_blank" rel="noopener">設定說明</a>。</p>
+      <label class="col">Apps Script 網址(含 ?key=…)
+        <input type="url" id="inbox-url" placeholder="https://script.google.com/macros/s/…/exec?key=…" value="${esc(inboxUrl)}" autocomplete="off">
+      </label>
+      <div class="btn-row">
+        <button class="btn primary" id="inbox-save">儲存並測試</button>
+        ${inboxUrl ? '<a class="btn" href="#/inbox">打開收件匣</a><button class="btn" id="inbox-clear">取消設定</button>' : ''}
+      </div>
+      <p class="small" id="inbox-status"></p>
+      <label class="switch"><input type="checkbox" id="inbox-auto" ${inboxAuto ? 'checked' : ''}> 有把握的自動記錄</label>
+      <p class="muted small">認得是哪個固定繳費、條碼或 PDF 文字讀得到金額和截止日、沒有警告的,直接存;其他的停下來給你確認。</p>
     </section>
     <section class="card col" id="pw-box">
       <h3>🔐 PDF 帳單密碼</h3>
@@ -68,6 +86,32 @@ export async function renderSettings() {
     <p class="muted small version">繳費小幫手 ${VERSION}</p>`;
 
   drawOcrBox();
+  $('#inbox-save').onclick = async () => {
+    const url = $('#inbox-url').value.trim();
+    const status = $('#inbox-status');
+    // 開發 / 測試時允許本機的假收件匣
+    const local = /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(url);
+    if ((!local && !/^https:\/\/script\.google(usercontent)?\.com\//.test(url)) || !/[?&]key=/.test(url)) {
+      status.textContent = '⚠️ 網址要是 https://script.google.com/macros/s/…/exec?key=… 的格式(後面要有 ?key=)。';
+      return;
+    }
+    status.textContent = '連線中…';
+    try {
+      const r = await testInbox(url);
+      await db.setMeta('inboxUrl', url);
+      status.textContent = `✅ 連上了:Gmail 標籤「${r.label}」裡有 ${r.count} 張待記錄。`;
+      toast('收件匣設定好了');
+    } catch (e) {
+      status.textContent = `⚠️ ${e.message}`;
+    }
+  };
+  $('#inbox-clear')?.addEventListener('click', async () => {
+    await db.setMeta('inboxUrl', '');
+    await db.setMeta('inboxItems', []);
+    toast('已取消收件匣設定');
+    render();
+  });
+  $('#inbox-auto').onchange = (e) => db.setMeta('inboxAutoSave', e.target.checked);
   $('#pw-clear')?.addEventListener('click', async () => {
     if (!(await confirmDialog({ title: '清除記住的 PDF 密碼?', message: '之後打開有密碼的 PDF 會再問一次。', ok: '清除', danger: true }))) return;
     await db.setMeta('pdfPasswords', []);

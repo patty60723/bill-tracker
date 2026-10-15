@@ -15,6 +15,7 @@ import { $, accountText, copyText, digits, esc, fileUrl, money, showImage, toast
 import { go, guardForm, navigate } from '../ui/router.js';
 import { progressHTML, resultHTML } from '../ui/scan-view.js';
 import { takeSharedFiles } from '../ui/share.js';
+import { ackInbox, cachedInboxItems, inboxFile } from '../inbox.js';
 
 export async function renderBillForm(id, params) {
   const { templates, bills } = await loadAll();
@@ -494,7 +495,7 @@ export async function renderBillForm(id, params) {
     const pageAmount = pageResult().amount;
     const amount = mode === 'same' ? await askPageAmount(pageAmount) : null;
     if (pageAmount != null) scan.pageAmounts.push(pageAmount);
-    applyScan(mergeScan([...scan.barcodes], scan.texts, undefined, scan.layouts), { amount });
+    return applyScan(mergeScan([...scan.barcodes], scan.texts, undefined, scan.layouts), { amount });
   }
   $('#live-btn').onclick = async () => {
     if (!(await startScan())) return;
@@ -620,9 +621,17 @@ export async function renderBillForm(id, params) {
       ...(scan.errors.length ? [`錯誤:\n${[...new Set(scan.errors)].join('\n')}`] : []),
     ].join('\n\n') : null;
     setStatus(resultHTML({ fields, notes, warnings, tip, detail }));
+    // 有把握:金額、截止日都有(截止日不是推測)、認得是哪個固定繳費、沒有警告。收件匣自動記錄用
+    const confident = r.amount != null && !!r.dueDate && r.source.dueDate !== 'guess'
+      && !!field('templateId').value && !warnings.length;
     status.querySelector('[data-copy-detail]')?.addEventListener('click', () => copyText(detail, '辨識細節', { preview: false }));
+    return { confident };
   }
   if (params.get('scan') && isNew) $('#scan-input').click();
+  // 從收件匣(Gmail 電子帳單)來的:辨識,有把握而且設定允許就直接存
+  const inboxId = isNew ? params.get('inbox') : null;
+  const inboxChain = params.get('chain') === '1';
+  let autoSaving = false;
   // 從 Gmail 等 app 分享過來的帳單:直接辨識(拿了就從暫存刪掉,網址也拿掉 shared,重新整理不會再跑一次)
   if (params.get('shared') && isNew) {
     history.replaceState(null, '', '#/bill/new');
@@ -656,13 +665,29 @@ export async function renderBillForm(id, params) {
       updatedAt: new Date().toISOString(),
       createdAt: bill.createdAt || new Date().toISOString(),
     };
+    const auto = autoSaving;
+    autoSaving = false;
     if (isNew && updated.templateId
-      && bills.some((b) => b.templateId === updated.templateId && b.period === updated.period)
-      && !(await confirmDialog({
+      && bills.some((b) => b.templateId === updated.templateId && b.period === updated.period)) {
+      // 收件匣的帳單已經記過(例如紙本先掃了):略過並標成已處理;自動記錄時不問
+      const choice = inboxId && auto ? 'skip' : await ask({
         title: '這個月已經有這筆了',
-        message: `${formatPeriod(updated.period)}已經有一筆「${updated.name}」,還要再新增一筆嗎?`,
-        ok: '還是新增',
-      }))) return;
+        message: `${formatPeriod(updated.period)}已經有一筆「${updated.name}」。`,
+        stacked: true,
+        actions: [
+          ...(inboxId ? [{ label: '略過這張', desc: '已經記過了,收件匣標成已處理', value: 'skip', kind: 'primary' }] : []),
+          { label: '還是新增', value: 'add', kind: inboxId ? '' : 'primary' },
+          { label: '取消', value: null },
+        ],
+      });
+      if (!choice) return;
+      if (choice === 'skip') {
+        await ackInbox(inboxId).catch((err) => toast(err.message));
+        guard.release();
+        toast(`「${updated.name}」${formatPeriod(updated.period)}已經記過了,略過`);
+        return nextInbox();
+      }
+    }
     let savedTemplate = false;
     // 掃描過的話,把這張帳單的特徵記到固定繳費上,下次掃到同一張就認得(見 profiles.js matchTemplate)
     const hints = scan.result ? scanHintsFrom(scan.result) : {};
@@ -678,9 +703,21 @@ export async function renderBillForm(id, params) {
     await db.put('bills', updated);
     guard.release();
     if (savedTemplate) await runAutoPay();
+    if (inboxId) {
+      await ackInbox(inboxId).catch((err) => toast(`已儲存,但收件匣沒標成已處理:${err.message}`));
+      toast(`${auto ? '已自動記錄' : '已儲存'}:${updated.name} ${money(updated.amount)}`);
+      return nextInbox();
+    }
     toast(savedTemplate ? '已儲存,也加進固定繳費了' : '已儲存');
     go(`#/bills?month=${updated.period}`);
   };
+  /** 收件匣:「全部記錄」時接著下一張,否則回收件匣。 */
+  async function nextInbox() {
+    const next = inboxChain && (await cachedInboxItems())[0];
+    if (next) return go(`#/bill/new?inbox=${encodeURIComponent(next.id)}&chain=1`);
+    if (inboxChain) toast('收件匣都處理完了 🎉');
+    return go('#/inbox');
+  }
   $('#cancel')?.addEventListener('click', () => navigate('#/')); // 有沒存的變更時會先問
   $('#delete')?.addEventListener('click', async () => {
     if (!(await confirmDialog({
@@ -695,6 +732,20 @@ export async function renderBillForm(id, params) {
     toast('已刪除');
     go(`#/bills?month=${bill.period}`);
   });
+  // 收件匣:等表單(含儲存)都設定好才開始辨識,有把握而且設定允許就直接存
+  if (inboxId) startInbox();
+  async function startInbox() {
+    const item = (await cachedInboxItems()).find((i) => i.id === inboxId);
+    let file = null;
+    if (item) file = await inboxFile(item).catch((err) => { toast(`下載不到這張帳單:${err.message}`); return null; });
+    else toast('這張已經處理過了');
+    if (!file) return go('#/inbox');
+    const outcome = await scanFile(file);
+    if (outcome?.confident && (await db.getMeta('inboxAutoSave')) !== false) {
+      autoSaving = true;
+      form.requestSubmit();
+    }
+  }
 }
 
 /** 即時掃描畫面上顯示目前讀到哪幾段。 */

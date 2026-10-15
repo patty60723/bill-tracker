@@ -5,7 +5,8 @@
 // 2. 背景提醒:Android Chrome 把 app 加到主畫面後,瀏覽器會定期(大約一天一次以上,時間由瀏覽器決定)
 //    用 periodicsync 叫醒這裡,有快截止、逾期、該拿繳費單的帳單就跳通知。
 import { notifyReminders, SYNC_TAG } from './src/notify.js';
-import { SHARE_CACHE, VENDOR_CACHE, VERSION } from './src/version.js';
+import { syncInboxInBackground } from './src/inbox.js';
+import { INBOX_CACHE, SHARE_CACHE, VENDOR_CACHE, VERSION } from './src/version.js';
 
 const CACHE = `bill-tracker-${VERSION}`;
 // vendor/(OCR 模型、引擎)放在另一個快取 VENDOR_CACHE(src/version.js),不跟著 app 版本清掉。
@@ -13,9 +14,9 @@ const CACHE = `bill-tracker-${VERSION}`;
 const ASSETS = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png',
   'icon-maskable-512.png', 'badge-96.png',
-  'src/app.js', 'src/backup.js', 'src/dates.js', 'src/db.js', 'src/enhance.js', 'src/ics.js',
+  'src/app.js', 'src/backup.js', 'src/dates.js', 'src/db.js', 'src/enhance.js', 'src/ics.js', 'src/inbox.js',
   'src/livescan.js', 'src/modal.js', 'src/notify.js', 'src/pages/bill-form.js', 'src/pages/bills.js',
-  'src/pages/home.js', 'src/pages/settings.js', 'src/pages/templates.js', 'src/paddle.js', 'src/parse.js', 'src/pdf.js', 'src/profiles.js', 'src/scan.js',
+  'src/pages/home.js', 'src/pages/inbox.js', 'src/pages/settings.js', 'src/pages/templates.js', 'src/paddle.js', 'src/parse.js', 'src/pdf.js', 'src/profiles.js', 'src/scan.js',
   'src/schedule.js', 'src/stats.js', 'src/ui/actions.js', 'src/ui/components.js', 'src/ui/dom.js',
   'src/ui/notifications.js', 'src/ui/router.js', 'src/ui/scan-view.js', 'src/ui/share.js', 'src/version.js',
   'vendor/zxing-reader.js', 'vendor/zxing_reader.wasm',
@@ -29,7 +30,7 @@ self.addEventListener('install', (e) => {
 
 self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys()
-    .then((keys) => Promise.all(keys.filter((k) => ![CACHE, VENDOR_CACHE, SHARE_CACHE].includes(k)).map((k) => caches.delete(k))))
+    .then((keys) => Promise.all(keys.filter((k) => ![CACHE, VENDOR_CACHE, SHARE_CACHE, INBOX_CACHE].includes(k)).map((k) => caches.delete(k))))
     .then(() => self.clients.claim()));
 });
 
@@ -102,12 +103,27 @@ async function vendorFile(e) {
 }
 
 self.addEventListener('periodicsync', (e) => {
-  if (e.tag === SYNC_TAG) e.waitUntil(notifyReminders(self.registration, { background: true }));
+  if (e.tag === SYNC_TAG) e.waitUntil(Promise.all([notifyReminders(self.registration, { background: true }), checkInbox()]));
 });
+
+/** Gmail 收件匣有新的電子帳單:先下載好,跳通知,點了直接到收件匣。 */
+async function checkInbox() {
+  const fresh = await syncInboxInBackground();
+  if (!fresh.length || Notification.permission !== 'granted') return;
+  await self.registration.showNotification(`📬 收到 ${fresh.length} 張電子帳單`, {
+    body: `${fresh.slice(0, 3).map((i) => i.subject || i.name).join('\n')}\n點這裡記錄`,
+    tag: 'bill-inbox', icon: 'icon-192.png', badge: 'badge-96.png', data: { url: './#/inbox' },
+  });
+}
 
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
-  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => (
-    list.length ? list[0].focus() : self.clients.openWindow('./')
-  )));
+  const url = new URL(e.notification.data?.url || './', self.registration.scope).href;
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (list) => {
+    if (!list.length) return self.clients.openWindow(url);
+    const client = list[0];
+    // 指到特定頁面(收件匣)才換頁;一般提醒只把 app 叫到前面,免得填到一半的表單被換掉
+    if (e.notification.data?.url?.includes('#')) await client.navigate(url).catch(() => {});
+    return client.focus();
+  }));
 });
