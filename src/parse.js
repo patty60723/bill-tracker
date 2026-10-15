@@ -400,11 +400,16 @@ function findCycleFromRange(lines) {
   return null;
 }
 
-/** 「代收截止日 115/11/06」(台電)、「延期繳費日 115年11月3日」(瓦斯):超商最後收單日(比繳費期限晚)。 */
+/** 「代收截止日 115/11/06」(台電)、「延期繳費日 115年11月3日」(瓦斯)、「代收期限 1151121」(自來水)。 */
+// 超商最後收單日的各種叫法:台電「代收截止日」、瓦斯「延期繳費日」、自來水「代收期限」
+// (自來水另寫「於 115年11月21日前仍可至代收單位繳費」)
+const COLLECT_RE = /代收截止|延期繳費|代收期限|仍可至代收/;
+
 function findCollectCutoff(lines, today) {
-  for (const region of regionsAfter(lines, /代收截止|延期繳費/)) {
-    // 取最靠近關鍵字的那個(allDates 是依格式分批找的,不是依位置)
-    const d = allDates(region).filter((x) => near(x.date, today, BARCODE_WINDOW_DAYS)).sort((a, b) => a.index - b.index)[0];
+  for (const region of regionsAfter(lines, COLLECT_RE)) {
+    // 取最靠近關鍵字的那個(allDates 是依格式分批找的,不是依位置);沒有完整日期再看「1151121」這種
+    const d = allDates(region).filter((x) => near(x.date, today, BARCODE_WINDOW_DAYS)).sort((a, b) => a.index - b.index)[0]
+      || looseDates(region, today).find((x) => near(x.date, today, BARCODE_WINDOW_DAYS));
     if (d) return d.date;
   }
   return null;
@@ -517,7 +522,7 @@ export function mergeScan(barcodeTexts, ocrTexts = [], today = todayISO(), layou
   // 台電等帳單:條碼上的日期是「代收截止日」(超商最後收單日),比帳單上的「繳費期限」晚,
   // 過了繳費期限就開始算遲付費用。截止日改用繳費期限,代收截止日記成 collectCutoff(畫面上寫進備註)。
   if (dueSource === 'barcode' && fromText.dueDate && !fromText.dueDateGuessed && fromText.dueDate < fromBarcode.dueDate
-    && diffDays(fromText.dueDate, fromBarcode.dueDate) <= 60 && rawTexts.some((t) => /代收截止|延期繳費/.test(normalizeOcrText(t)))) {
+    && diffDays(fromText.dueDate, fromBarcode.dueDate) <= 60 && rawTexts.some((t) => COLLECT_RE.test(normalizeOcrText(t)))) {
     result.collectCutoff = fromBarcode.dueDate;
     result.dueDate = fromText.dueDate;
     result.source.dueDate = 'ocr';

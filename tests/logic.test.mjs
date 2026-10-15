@@ -586,3 +586,18 @@ test('瓦斯費(真實 PaddleOCR 輸出,個資已換):基本費不是總額、�
   assert.equal(b.amount, 269);
   assert.equal(b.source.amount, 'barcode');
 });
+
+test('水費(真實 PaddleOCR 輸出,個資已換):條碼日期是代收期限,截止日用繳費期限', async () => {
+  const fs = await import('node:fs');
+  const text = fs.readFileSync(new URL('./fixtures/water-paddle.txt', import.meta.url), 'utf8');
+  for (const barcodes of [['151121101', '11510L000000244'], []]) {
+    const r = mergeScan(barcodes, [text], '2026-10-15');
+    assert.equal(r.amount, 244);
+    assert.equal(r.dueDate, '2026-10-21'); // 繳費期限,不是條碼 / 「代收期限 1151121」的 11/21
+    assert.equal(r.collectCutoff, '2026-11-21');
+    assert.equal(r.period, '2026-10'); // 收費年月 115/10
+    assert.equal(r.cycleMonths, 2); // 用水期間 07/11 - 09/09
+    assert.equal(r.category, 'water');
+    assert.equal(r.accountNo, '12171234567890'); // 銷帳編號
+  }
+});
