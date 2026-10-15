@@ -623,3 +623,15 @@ test('台灣大哥大(電信費 + 代收費用兩頁):信用卡號不是金額�
   // 台電的「****2219」是金額(星號補位),不是遮罩號碼
   assert.equal(parseBillText('應繳總金額\n****2,219 元', '2026-09-20').amount, 2219);
 });
+
+test('台灣大哥大完整帳單(兩類合計一張):應繳總額 3,893,代收帳戶不是繳費帳號', async () => {
+  const fs = await import('node:fs');
+  const text = fs.readFileSync(new URL('./fixtures/twm-full.txt', import.meta.url), 'utf8');
+  const r = mergeScan([], [text], '2026-10-15');
+  assert.equal(r.amount, 3893); // 不是明細的 1,599 / 2,495 / 1,398
+  assert.equal(r.dueDate, '2026-11-02');
+  assert.equal(r.period, '2026-10');
+  assert.equal(r.autoPay, true);
+  assert.equal(r.profile, 'twm');
+  assert.equal(r.accountNo, undefined); // 繳款書上的銀行帳號是業者的代收帳戶
+});
