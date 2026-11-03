@@ -3,6 +3,13 @@
 記錄每月繳費的手機網頁 app(PWA,可「加到主畫面」當成 app 用):掃描繳費單、記錄每期金額與
 截止日、上傳繳費證明、固定繳費的拿單與截止提醒。資料只存在手機裡,不上傳任何伺服器。
 
+**技術**：原生 JavaScript ES Modules（免建置）· IndexedDB 本機儲存 · PaddleOCR（PP-OCRv5，裝置端執行）與 Tesseract.js 備援 · ZXing WASM 條碼／QR 掃描 · PDF.js · ESLint、單元測試與 Playwright 端對端測試（GitHub Actions CI）
+
+**亮點**
+- **拍一張就帶入**：條碼、稅單 QR Code、文字辨識三種方式並用，自動填入金額、截止日與帳號
+- **資料不離開手機**：辨識全部在裝置上進行，不上傳任何伺服器
+- **台灣在地格式**：認得超商三段式條碼、民國年、雙月計費，稅單截止日自動扣回 3 天
+
 實作細節與演算法見 [`docs/TECHNICAL.md`](docs/TECHNICAL.md)。
 
 ## 功能
